@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GIT_CONFIG_NOSYSTEM: "1"
+  GIT_CONFIG_GLOBAL: /dev/null
+  GIT_TERMINAL_PROMPT: "0"
+
+jobs:
+  lint-and-verify:
+    name: Lint, Build, Contracts & Policies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting (gofmt)
+        run: |
+          UNFORMATTED="$(gofmt -l .)"
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following files are not formatted with gofmt:" >&2
+            printf '%s\n' "$UNFORMATTED" >&2
+            exit 1
+          fi
+
+      - name: Verify Go modules and tidiness
+        run: |
+          go mod verify
+          go mod tidy -diff
+
+      - name: Run go vet
+        run: make vet
+
+      - name: Build all packages and binaries
+        run: make build
+
+      - name: Verify POSIX cross-compilation
+        run: |
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${pair%/*}"
+            arch="${pair#*/}"
+            echo "Building $os/$arch..."
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build ./cmd/...
+          done
+
+      - name: Validate OpenAPI 3.1 contract offline
+        run: make openapi-validate
+
+      - name: Validate CEL policy bundles and run policy test suites
+        run: |
+          for f in policies/defaults/*.yaml policies/examples/*.yaml; do
+            ./bin/custodian-policy validate --bundle "$f"
+          done
+          ./bin/custodian-policy test policies/tests
+
+      - name: Verify publisher dependency isolation
+        run: go test -v -count=1 -run TestPublisherDependencyIsolation ./internal/publication
+
+      - name: Verify Layer 0 domain purity
+        run: |
+          NON_ALLOWED="$(go list -f '{{range .Imports}}{{.}}{{"\n"}}{{end}}' ./internal/domain | grep '\.' | grep -v '^github.com/google/uuid$' || true)"
+          if [ -n "$NON_ALLOWED" ]; then
+            echo "Layer 0 isolation violation in internal/domain:" >&2
+            printf '%s\n' "$NON_ALLOWED" >&2
+            exit 1
+          fi
+
+      - name: Verify E2E opaque-box isolation and compile-only build
+        run: ./test/e2e/run_e2e.sh --compile-only --tier=all
+
+  unit-tests:
+    name: Unit Tests (-race -short)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run unit tests with race detector and coverage
+        run: |
+          go test -race -short -count=1 -covermode=atomic -coverprofile=coverage.out \
+            ./api/... \
+            ./cmd/... \
+            ./internal/... \
+            ./prompts/... \
+            ./test/fixtures/... \
+            ./test/integration/... \
+            ./test/adversarial/...
+
+      - name: Summarize coverage
+        run: |
+          SUMMARY="$(go tool cover -func=coverage.out | tail -n 1)"
+          echo "$SUMMARY"
+          echo "### Unit Test Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`$SUMMARY\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage
+          path: coverage.out
+          retention-days: 7
+
+  integration-pg:
+    name: PostgreSQL 17 Integration Tests (-race)
+    needs:
+      - lint-and-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pre-pull postgres:17-alpine image
+        run: docker pull postgres:17-alpine
+
+      - name: Run PostgreSQL 17 integration tests
+        run: |
+          go test -race -count=1 -timeout=15m \
+            ./cmd/custodian-api \
+            ./cmd/custodian-worker \
+            ./cmd/custodian-publisher \
+            ./internal/api \
+            ./internal/approvals \
+            ./internal/artifacts \
+            ./internal/audit \
+            ./internal/harness \
+            ./internal/operations \
+            ./internal/persistence \
+            ./internal/proposals \
+            ./internal/publication \
+            ./internal/repositories \
+            ./internal/workflow \
+            ./internal/workspaces
+
+  release-gates-and-adversarial:
+    name: Release Gates & Adversarial Suites (-race)
+    needs:
+      - lint-and-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pre-pull postgres:17-alpine image
+        run: docker pull postgres:17-alpine
+
+      - name: Run E2E harness self-tests
+        run: ./test/e2e/run_e2e.sh --harness-only
+
+      - name: Run §16 release gates and Tier 5 adversarial suites
+        run: go test -race -count=1 -v -timeout=15m ./test/integration/... ./test/adversarial/...
