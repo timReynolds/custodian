@@ -1,0 +1,47 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: repo-strict-security
+  version: "1.0.0"
+  scope: REPO
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+    - trivy
+  decisionModel:
+    route: approved-code-review
+    trigger:
+      - high_risk_change
+rules:
+  - id: repo.security.auth_paths
+    description: Require two security-team reviewers when authentication or security modules change.
+    stages: [EGRESS]
+    when: >-
+      change.paths.exists(p, p.startsWith("auth/") || p.startsWith("security/"))
+    effect: REQUIRE_APPROVAL
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: security-team
+        minimum: 2
+  - id: repo.db.migrations
+    description: Require database owner review on schema migrations.
+    stages: [EGRESS]
+    when: change.paths.exists(p, p.startsWith("migrations/"))
+    effect: REQUIRE_APPROVAL
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: db-owners
+        minimum: 1
+  - id: repo.standard.allow
+    description: Allow clean changes once deterministic scans succeed.
+    stages: [INGRESS, EGRESS]
+    when: >-
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.prohibited_licenses == 0
+    effect: ALLOW

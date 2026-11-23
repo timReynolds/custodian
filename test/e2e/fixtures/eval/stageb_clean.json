@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "assessment_type": "SECURITY_REVIEW",
+  "risk": "LOW",
+  "disposition": "CLEAR",
+  "confidence": 0.94,
+  "summary": "Routine feature addition with no findings",
+  "findings": [],
+  "limitations": [
+    "Automated review only"
+  ]
+}

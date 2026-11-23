@@ -1,0 +1,133 @@
+ValidatePolicyRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - bundle_yaml
+  properties:
+    bundle_yaml:
+      type: string
+      minLength: 1
+    test_cases_yaml:
+      type: string
+
+PolicyValidationError:
+  type: object
+  additionalProperties: false
+  required:
+    - code
+    - message
+  properties:
+    rule_id:
+      type: ["string", "null"]
+    code:
+      type: string
+    message:
+      type: string
+
+ValidatePolicyResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - valid
+    - name
+    - version
+    - digest
+    - rules_compiled
+    - errors
+  properties:
+    valid:
+      type: boolean
+    name:
+      type: string
+    version:
+      type: string
+    scope:
+      type: ["string", "null"]
+      enum:
+        - ORG
+        - REPO
+        - null
+    digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    rules_compiled:
+      type: integer
+      minimum: 0
+    errors:
+      type: array
+      items:
+        $ref: "./policies.yaml#/PolicyValidationError"
+
+PolicySimulationInput:
+  type: object
+  additionalProperties: true
+  description: Verified policy fact structure matching Custodian CEL evaluation context.
+
+SimulatePolicyRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - stage
+    - input
+  properties:
+    bundle_yaml:
+      type: string
+      minLength: 1
+    org_bundle_yaml:
+      type: string
+      minLength: 1
+    bundle_id:
+      $ref: "./common.yaml#/UUIDv7"
+    stage:
+      type: string
+      enum:
+        - INGRESS
+        - EGRESS
+    input:
+      $ref: "./policies.yaml#/PolicySimulationInput"
+
+RuleTrace:
+  type: object
+  additionalProperties: false
+  required:
+    - rule_id
+    - matched
+    - effect
+  properties:
+    rule_id:
+      type: string
+    matched:
+      type: boolean
+    effect:
+      $ref: "./inspection.yaml#/PolicyEffect"
+    error:
+      type: ["string", "null"]
+
+SimulatePolicyResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - effect
+    - bundle_digest
+    - input_digest
+    - matched_rule_ids
+    - obligations
+    - rule_trace
+  properties:
+    effect:
+      $ref: "./inspection.yaml#/PolicyEffect"
+    bundle_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    input_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    matched_rule_ids:
+      type: array
+      items:
+        type: string
+    obligations:
+      type: array
+      items:
+        $ref: "./proposals.yaml#/Obligation"
+    rule_trace:
+      type: array
+      items:
+        $ref: "./policies.yaml#/RuleTrace"

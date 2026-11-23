@@ -1,0 +1,122 @@
+UUIDv7:
+  type: string
+  format: uuid
+  pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+  description: RFC 9562 UUIDv7 identifier.
+
+CommitSHA:
+  type: string
+  pattern: "^[0-9a-f]{40}$"
+  description: 40-character lowercase hexadecimal Git commit SHA.
+
+SHA256Hex:
+  type: string
+  pattern: "^[0-9a-f]{64}$"
+  description: 64-character lowercase hexadecimal SHA-256 digest.
+
+SHA256Digest:
+  type: string
+  pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
+  description: SHA-256 digest in lowercase hex or prefixed `sha256:<64-hex>` form.
+
+PrincipalRef:
+  type: object
+  additionalProperties: false
+  required:
+    - principal_id
+    - identity_provider
+  properties:
+    principal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    identity_provider:
+      type: string
+      minLength: 1
+      maxLength: 255
+
+ArtifactRef:
+  type: object
+  additionalProperties: false
+  required:
+    - artifact_id
+    - kind
+    - sha256
+    - size_bytes
+    - format
+    - storage_key
+    - storage_generation
+  properties:
+    artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    kind:
+      type: string
+      enum:
+        - WORKSPACE_SOURCE
+        - SOURCE_MANIFEST
+        - EGRESS_SNAPSHOT
+        - CANONICAL_TREE
+        - CANONICAL_DIFF
+        - PUBLICATION_MANIFEST
+        - SCAN_EVIDENCE
+        - MODEL_EVIDENCE
+    sha256:
+      $ref: "./common.yaml#/SHA256Hex"
+    size_bytes:
+      type: integer
+      format: int64
+      minimum: 0
+    format:
+      type: string
+      minLength: 1
+      maxLength: 64
+    storage_key:
+      type: string
+      minLength: 1
+      maxLength: 1024
+    storage_generation:
+      type: string
+      minLength: 1
+      maxLength: 128
+    expires_at:
+      type: ["string", "null"]
+      format: date-time
+
+Provenance:
+  type: object
+  additionalProperties: false
+  required:
+    - type
+    - capture_method
+  properties:
+    type:
+      type: string
+      enum:
+        - agent_assisted
+        - human_authored
+    capture_method:
+      type: string
+      enum:
+        - frozen_filesystem
+        - patch_upload
+
+RepositoryRef:
+  type: object
+  additionalProperties: false
+  required:
+    - provider_id
+    - base_commit
+    - target_ref
+  properties:
+    provider_id:
+      type: integer
+      format: int64
+      minimum: 1
+    full_name:
+      type: ["string", "null"]
+      minLength: 3
+      maxLength: 255
+    base_commit:
+      $ref: "./common.yaml#/CommitSHA"
+    target_ref:
+      type: string
+      minLength: 1
+      maxLength: 256

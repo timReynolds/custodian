@@ -1,0 +1,55 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: engineering-default
+  version: "1.0.0"
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+    trigger:
+      - restricted_ip_finding
+      - high_risk_change
+      - restricted_repository
+rules:
+  - id: secrets.block
+    stages: [INGRESS, EGRESS]
+    when: findings.critical_secrets > 0
+    effect: DENY
+    overridable: false
+  - id: ip.review
+    stages: [EGRESS]
+    when: >-
+      assessment.ip_risk in ["HIGH", "CRITICAL"]
+    effect: REQUIRE_APPROVAL
+    obligations:
+      - reviewer_group: ip-review
+        minimum: 1
+  - id: model.indeterminate
+    stages: [EGRESS]
+    when: >-
+      assessment.status != "COMPLETE"
+    effect: QUARANTINE
+  - id: security.infrastructure
+    stages: [EGRESS]
+    when: >-
+      change.paths.exists(
+        p, p.startsWith("infra/prod/")
+      )
+    effect: REQUIRE_APPROVAL
+    obligations:
+      - reviewer_group: platform-owners
+        minimum: 1
+  - id: standard.allow
+    stages: [EGRESS]
+    when: >-
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.prohibited_licenses == 0
+    effect: ALLOW

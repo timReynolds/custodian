@@ -1,0 +1,20 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: invalid-cel-syntax
+  version: "1.0.0"
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+rules:
+  - id: bad.syntax
+    stages: [EGRESS]
+    when: "findings.critical_secrets >== 0 && ("
+    effect: ALLOW

@@ -1,0 +1,200 @@
+apiVersion: custodian.dev/v1
+kind: PolicyTestSuite
+metadata:
+  name: default-policy-suite
+  description: Verifies engineering-default policy rules across ingress and egress scenarios.
+bundle: ../defaults/default.yaml
+cases:
+  - name: clean_egress_allow
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: NONE
+      change:
+        paths: ["pkg/service/handler.go"]
+    expect:
+      effect: ALLOW
+      matched_rules: [standard.allow]
+
+  - name: clean_ingress_allow
+    stage: INGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+    expect:
+      effect: ALLOW
+      matched_rules: [ingress.allow]
+
+  - name: ingress_secret_deny
+    stage: INGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 1
+        prohibited_licenses: 0
+    expect:
+      effect: DENY
+      matched_rules: [secrets.block]
+
+  - name: egress_prohibited_license_deny
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 1
+      assessment:
+        status: COMPLETE
+        ip_risk: LOW
+      change:
+        paths: ["LICENSE"]
+    expect:
+      effect: DENY
+      matched_rules: [licenses.block]
+
+  - name: incomplete_scan_quarantine
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: false
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: NONE
+    expect:
+      effect: QUARANTINE
+      matched_rules: [scan.incomplete]
+
+  - name: indeterminate_model_quarantine
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: INDETERMINATE
+        ip_risk: NONE
+    expect:
+      effect: QUARANTINE
+      matched_rules: [model.indeterminate]
+
+  - name: high_ip_risk_requires_ip_review
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: HIGH
+      change:
+        paths: ["internal/algo.go"]
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [ip.review, standard.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: ip-review
+          minimum: 1
+
+  - name: infra_prod_requires_platform_owners
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: LOW
+      change:
+        paths: ["infra/prod/main.tf"]
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [security.infrastructure, standard.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: platform-owners
+          minimum: 1
+
+  - name: secret_overrides_infra_approval_to_deny
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 1
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: HIGH
+      change:
+        paths: ["infra/prod/secrets.env"]
+    expect:
+      effect: DENY
+      matched_rules: [secrets.block, ip.review, security.infrastructure]
+
+  - name: stage_b_block_code_review_denies
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: NONE
+        assessment_type: CODE_REVIEW
+      change:
+        paths: ["pkg/service/handler.go"]
+    expect:
+      effect: DENY
+      matched_rules: [model.block]
+
+  - name: stage_b_block_ip_provenance_denies
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: CRITICAL
+        assessment_type: IP_PROVENANCE
+      change:
+        paths: ["internal/algo.go"]
+    expect:
+      effect: DENY
+      matched_rules: [model.block, ip.review]
+
+  - name: stage_b_indeterminate_disposition_quarantines
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        disposition: INDETERMINATE
+        risk: NONE
+        ip_risk: NONE
+      change:
+        paths: ["pkg/service/handler.go"]
+    expect:
+      effect: QUARANTINE
+      matched_rules: [model.indeterminate]

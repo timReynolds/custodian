@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "assessment_type": "IP_PROVENANCE",
+  "risk": "NONE",
+  "disposition": "INDETERMINATE",
+  "confidence": 0.0,
+  "summary": "Assessment indeterminate due to route classification restriction",
+  "findings": [],
+  "limitations": [
+    "Unauthorised model route for repository classification"
+  ]
+}

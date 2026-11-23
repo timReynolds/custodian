@@ -1,0 +1,206 @@
+apiVersion: custodian.dev/v1
+kind: PolicyTestSuite
+metadata:
+  name: composition-and-precedence-suite
+  description: Verifies org-before-repo composition, precedence lattice, and fail-closed runtime CEL errors.
+org_bundle: ../examples/org_baseline.yaml
+bundle: ../examples/repo_strict_security.yaml
+cases:
+  - name: additive_repo_security_and_db_obligations
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_vulnerabilities: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: LOW
+      change:
+        paths: ["auth/oidc.go", "migrations/0002_add_idx.sql"]
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [repo.security.auth_paths, repo.db.migrations, repo.standard.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: security-team
+          minimum: 2
+        - type: HUMAN_REVIEW
+          reviewer_group: db-owners
+          minimum: 1
+
+  - name: org_vulnerability_remediation_beats_repo_allow
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_vulnerabilities: 2
+      assessment:
+        status: COMPLETE
+        ip_risk: NONE
+      change:
+        paths: ["go.mod"]
+    expect:
+      effect: REQUIRE_REMEDIATION
+      matched_rules: [org.vuln.remediation, repo.standard.allow]
+
+  - name: org_secret_deny_blocks_permissive_repo_override
+    stage: EGRESS
+    bundle_yaml: |
+      apiVersion: custodian.dev/v1
+      kind: PolicyBundle
+      metadata:
+        name: permissive-repo-attempt
+        version: "1.0.0"
+        scope: REPO
+      defaults:
+        effect: ALLOW
+        onError: DENY
+      rules:
+        - id: org.secrets.block
+          stages: [INGRESS, EGRESS]
+          when: findings.critical_secrets > 0
+          effect: ALLOW
+          overridable: true
+        - id: repo.allow.all
+          stages: [INGRESS, EGRESS]
+          when: "true"
+          effect: ALLOW
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 1
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+    expect:
+      effect: DENY
+      matched_rules: [org.secrets.block, repo.allow.all]
+
+  - name: runtime_cel_error_fails_closed_to_deny
+    stage: EGRESS
+    bundle_yaml: |
+      apiVersion: custodian.dev/v1
+      kind: PolicyBundle
+      metadata:
+        name: fail-closed-test
+        version: "1.0.0"
+      defaults:
+        effect: ALLOW
+        onError: DENY
+      rules:
+        - id: runtime.allow
+          stages: [EGRESS]
+          when: "true"
+          effect: ALLOW
+        - id: runtime.divzero
+          stages: [EGRESS]
+          when: "(10 / findings.critical_secrets) > 0"
+          effect: ALLOW
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+      assessment:
+        status: COMPLETE
+    expect:
+      effect: DENY
+      expect_trace_error: true
+
+  - name: org_stage_b_block_code_review_beats_repo_allow
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_vulnerabilities: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: NONE
+        assessment_type: CODE_REVIEW
+      change:
+        paths: ["pkg/app.go"]
+    expect:
+      effect: DENY
+      matched_rules: [org.model.block, repo.standard.allow]
+
+  - name: org_stage_b_block_ip_provenance_beats_repo_allow
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_vulnerabilities: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: CRITICAL
+        assessment_type: IP_PROVENANCE
+      change:
+        paths: ["auth/oidc.go"]
+    expect:
+      effect: DENY
+      matched_rules: [org.model.block, repo.security.auth_paths, repo.standard.allow]
+
+  - name: org_stage_b_indeterminate_disposition_beats_repo_allow
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_vulnerabilities: 0
+      assessment:
+        status: COMPLETE
+        disposition: INDETERMINATE
+        risk: NONE
+        ip_risk: NONE
+      change:
+        paths: ["pkg/app.go"]
+    expect:
+      effect: QUARANTINE
+      matched_rules: [org.model.indeterminate, repo.standard.allow]
+
+  - name: org_stage_b_block_blocks_permissive_repo_override
+    stage: EGRESS
+    bundle_yaml: |
+      apiVersion: custodian.dev/v1
+      kind: PolicyBundle
+      metadata:
+        name: permissive-repo-model-override
+        version: "1.0.0"
+        scope: REPO
+      defaults:
+        effect: ALLOW
+        onError: DENY
+      rules:
+        - id: org.model.block
+          stages: [EGRESS]
+          when: assessment.disposition == "BLOCK"
+          effect: ALLOW
+          overridable: true
+        - id: repo.allow.all
+          stages: [INGRESS, EGRESS]
+          when: "true"
+          effect: ALLOW
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: NONE
+    expect:
+      effect: DENY
+      matched_rules: [org.model.block, repo.allow.all]

@@ -1,0 +1,21 @@
+{
+  "schema_version": "1",
+  "assessment_type": "IP_PROVENANCE",
+  "risk": "HIGH",
+  "disposition": "REVIEW",
+  "confidence": 0.87,
+  "summary": "Potential reuse of restricted implementation",
+  "findings": [
+    {
+      "category": "SOURCE_SIMILARITY",
+      "evidence_ids": [
+        "{{EVIDENCE_ID}}"
+      ],
+      "reason": "Non-trivial structural similarity",
+      "recommended_action": "IP_REVIEW"
+    }
+  ],
+  "limitations": [
+    "Source ownership cannot be established from similarity alone"
+  ]
+}

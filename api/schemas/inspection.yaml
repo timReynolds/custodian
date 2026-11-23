@@ -1,0 +1,309 @@
+Severity:
+  type: string
+  enum:
+    - CRITICAL
+    - HIGH
+    - MEDIUM
+    - LOW
+    - INFO
+
+ScanRunSummary:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - proposal_id
+    - artifact_id
+    - scanner
+    - scanner_version
+    - status
+    - files_examined
+    - files_skipped
+    - complete
+    - started_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    scanner:
+      type: string
+    scanner_version:
+      type: string
+    status:
+      type: string
+      enum:
+        - PENDING
+        - RUNNING
+        - COMPLETED
+        - FAILED
+        - TIMED_OUT
+        - INCOMPLETE
+    files_examined:
+      type: integer
+      minimum: 0
+    files_skipped:
+      type: integer
+      minimum: 0
+    complete:
+      type: boolean
+    started_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: ["string", "null"]
+      format: date-time
+
+Finding:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - scan_run_id
+    - category
+    - severity
+    - rule_id
+    - fingerprint
+    - redacted
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    scan_run_id:
+      $ref: "./common.yaml#/UUIDv7"
+    evidence_id:
+      type: ["string", "null"]
+    scanner:
+      type: ["string", "null"]
+    category:
+      type: string
+    severity:
+      $ref: "./inspection.yaml#/Severity"
+    rule_id:
+      type: string
+    path:
+      type: ["string", "null"]
+    start_line:
+      type: ["integer", "null"]
+      minimum: 0
+    end_line:
+      type: ["integer", "null"]
+      minimum: 0
+    fingerprint:
+      type: string
+    evidence_artifact_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    evidence_ref:
+      type: ["string", "null"]
+    baseline:
+      type: ["string", "null"]
+    confidence:
+      type: ["number", "null"]
+      minimum: 0
+      maximum: 1
+    message:
+      type: ["string", "null"]
+    redacted:
+      type: boolean
+    metadata:
+      type: ["object", "null"]
+      additionalProperties: true
+
+ProposalFindingsResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - proposal_id
+    - scan_runs
+    - findings
+    - has_more
+  properties:
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    scan_runs:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/ScanRunSummary"
+    findings:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/Finding"
+    next_cursor:
+      type: ["string", "null"]
+    has_more:
+      type: boolean
+
+ModelFinding:
+  type: object
+  additionalProperties: false
+  required:
+    - category
+    - evidence_ids
+    - reason
+    - recommended_action
+  properties:
+    category:
+      type: string
+    evidence_ids:
+      type: array
+      items:
+        type: string
+    reason:
+      type: string
+    recommended_action:
+      type: string
+
+ModelAssessment:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - proposal_id
+    - artifact_id
+    - model_route
+    - model_version
+    - prompt_version
+    - assessment_type
+    - status
+    - input_digest
+    - output_digest
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    model_route:
+      type: string
+    model_version:
+      type: string
+    prompt_version:
+      type: string
+    assessment_type:
+      type: string
+    status:
+      type: string
+      enum:
+        - PENDING
+        - COMPLETE
+        - INDETERMINATE
+        - FAILED
+    risk:
+      type: ["string", "null"]
+      enum:
+        - CRITICAL
+        - HIGH
+        - MEDIUM
+        - LOW
+        - NONE
+        - null
+    disposition:
+      type: ["string", "null"]
+      enum:
+        - CLEAR
+        - REVIEW
+        - ESCALATE
+        - BLOCK
+        - INDETERMINATE
+        - null
+    summary:
+      type: ["string", "null"]
+    findings:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/ModelFinding"
+    limitations:
+      type: array
+      items:
+        type: string
+    input_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    output_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    created_at:
+      type: string
+      format: date-time
+
+PolicyEffect:
+  type: string
+  enum:
+    - DENY
+    - QUARANTINE
+    - REQUIRE_REMEDIATION
+    - REQUIRE_APPROVAL
+    - ALLOW
+
+PolicyReason:
+  type: object
+  additionalProperties: false
+  required:
+    - rule_id
+    - effect
+  properties:
+    rule_id:
+      type: string
+    effect:
+      $ref: "./inspection.yaml#/PolicyEffect"
+    stage:
+      type: ["string", "null"]
+    message:
+      type: ["string", "null"]
+
+PolicyDecision:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - proposal_id
+    - policy_bundle_id
+    - input_digest
+    - effect
+    - reasons
+    - obligations
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    policy_bundle_id:
+      $ref: "./common.yaml#/UUIDv7"
+    input_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    effect:
+      $ref: "./inspection.yaml#/PolicyEffect"
+    reasons:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/PolicyReason"
+    obligations:
+      type: array
+      items:
+        $ref: "./proposals.yaml#/Obligation"
+    created_at:
+      type: string
+      format: date-time
+
+ProposalAssessmentsResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - proposal_id
+    - assessments
+    - policy_decisions
+  properties:
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    assessments:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/ModelAssessment"
+    policy_decisions:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/PolicyDecision"

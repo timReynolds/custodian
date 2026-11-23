@@ -1,0 +1,38 @@
+# Build outputs & binaries
+/bin/
+/dist/
+/custodian
+/custodian-api
+/custodian-worker
+/custodian-publisher
+/custodian-policy
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Local runtime, scratch & env
+.tmp/
+tmp/
+*.log
+*.pid
+.env
+.env.local
+
+# OS & editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Key/credential hygiene (allow committed test fixtures explicitly)
+*.pem
+*.key
+*.p12
+!test/fixtures/**
+!test/e2e/fixtures/**
+
+# Local agent scratch
+.agents/

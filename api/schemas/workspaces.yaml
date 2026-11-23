@@ -1,0 +1,263 @@
+WorkspaceStatus:
+  type: string
+  enum:
+    - PENDING
+    - PREPARING
+    - READY
+    - FAILED
+    - CLOSED
+
+SourceOptions:
+  type: object
+  additionalProperties: false
+  properties:
+    include_git_metadata:
+      type: boolean
+      default: false
+    include_history:
+      type: boolean
+      default: false
+
+WorkspaceRepositoryInput:
+  type: object
+  additionalProperties: false
+  required:
+    - provider
+    - repository_id
+    - ref
+  properties:
+    provider:
+      type: string
+      enum:
+        - github
+    repository_id:
+      type: integer
+      format: int64
+      minimum: 1
+    ref:
+      type: string
+      minLength: 1
+      maxLength: 256
+
+WorkspaceAgentInput:
+  type: object
+  additionalProperties: false
+  required:
+    - type
+    - session_id
+    - model_route
+  properties:
+    type:
+      type: string
+      minLength: 1
+      maxLength: 128
+    session_id:
+      type: string
+      minLength: 1
+      maxLength: 256
+    model_route:
+      type: string
+      minLength: 1
+      maxLength: 128
+
+CreateWorkspaceRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - repository
+  properties:
+    repository:
+      $ref: "./workspaces.yaml#/WorkspaceRepositoryInput"
+    agent:
+      $ref: "./workspaces.yaml#/WorkspaceAgentInput"
+    source_options:
+      $ref: "./workspaces.yaml#/SourceOptions"
+
+CreateWorkspaceResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - workspace_id
+    - repository_id
+    - owner_id
+    - base_commit
+    - target_ref
+    - status
+    - generation
+    - operation_id
+    - created_at
+  properties:
+    workspace_id:
+      $ref: "./common.yaml#/UUIDv7"
+    repository_id:
+      $ref: "./common.yaml#/UUIDv7"
+    owner_id:
+      $ref: "./common.yaml#/UUIDv7"
+    base_commit:
+      $ref: "./common.yaml#/CommitSHA"
+    target_ref:
+      type: string
+      minLength: 1
+    status:
+      $ref: "./workspaces.yaml#/WorkspaceStatus"
+    generation:
+      type: integer
+      format: int64
+      minimum: 1
+    operation_id:
+      $ref: "./common.yaml#/UUIDv7"
+    created_at:
+      type: string
+      format: date-time
+
+WorkspaceAgentInfo:
+  type: object
+  additionalProperties: false
+  required:
+    - agent_id
+    - session_id
+    - model_route
+  properties:
+    agent_id:
+      $ref: "./common.yaml#/UUIDv7"
+    type:
+      type: ["string", "null"]
+    session_id:
+      type: string
+    model_route:
+      type: string
+
+Workspace:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - repository_id
+    - github_repository_id
+    - owner
+    - base_commit
+    - target_ref
+    - generation
+    - status
+    - source_options
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    repository_id:
+      $ref: "./common.yaml#/UUIDv7"
+    github_repository_id:
+      type: integer
+      format: int64
+      minimum: 1
+    repository_full_name:
+      type: ["string", "null"]
+    owner:
+      $ref: "./common.yaml#/PrincipalRef"
+    agent:
+      anyOf:
+        - $ref: "./workspaces.yaml#/WorkspaceAgentInfo"
+        - type: "null"
+    base_commit:
+      $ref: "./common.yaml#/CommitSHA"
+    target_ref:
+      type: string
+    source_artifact_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    generation:
+      type: integer
+      format: int64
+      minimum: 1
+    status:
+      $ref: "./workspaces.yaml#/WorkspaceStatus"
+    source_options:
+      $ref: "./workspaces.yaml#/SourceOptions"
+    created_at:
+      type: string
+      format: date-time
+
+DownloadDescriptor:
+  type: object
+  additionalProperties: false
+  required:
+    - method
+    - url
+    - expires_at
+  properties:
+    method:
+      type: string
+      enum:
+        - GET
+    url:
+      type: string
+      format: uri
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+    expires_at:
+      type: string
+      format: date-time
+
+UploadCapability:
+  type: object
+  additionalProperties: false
+  required:
+    - token
+    - workspace_id
+    - generation
+    - max_bytes
+    - expires_at
+    - upload_url
+  properties:
+    token:
+      type: string
+      minLength: 1
+    workspace_id:
+      $ref: "./common.yaml#/UUIDv7"
+    generation:
+      type: integer
+      format: int64
+      minimum: 1
+    max_bytes:
+      type: integer
+      format: int64
+      minimum: 1
+    expires_at:
+      type: string
+      format: date-time
+    upload_url:
+      type: string
+      format: uri
+
+SourceArtifactDescriptor:
+  type: object
+  additionalProperties: false
+  required:
+    - workspace_id
+    - generation
+    - base_commit
+    - artifact
+    - download
+    - source_options
+  properties:
+    workspace_id:
+      $ref: "./common.yaml#/UUIDv7"
+    generation:
+      type: integer
+      format: int64
+      minimum: 1
+    base_commit:
+      $ref: "./common.yaml#/CommitSHA"
+    artifact:
+      $ref: "./common.yaml#/ArtifactRef"
+    download:
+      $ref: "./workspaces.yaml#/DownloadDescriptor"
+    source_options:
+      $ref: "./workspaces.yaml#/SourceOptions"
+    upload_capability:
+      anyOf:
+        - $ref: "./workspaces.yaml#/UploadCapability"
+        - type: "null"
