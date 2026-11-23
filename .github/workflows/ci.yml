@@ -28,7 +28,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           check-latest: true
           cache: true
 
@@ -102,7 +102,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           check-latest: true
           cache: true
 
@@ -124,7 +124,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           check-latest: true
           cache: true
 
@@ -170,7 +170,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           check-latest: true
           cache: true
 
@@ -197,8 +197,34 @@ jobs:
             ./internal/proposals \
             ./internal/publication \
             ./internal/repositories \
-            ./internal/workflow \
             ./internal/workspaces
+
+  integration-pg-workflow:
+    name: PostgreSQL 17 Workflow Tests (-race)
+    needs:
+      - lint-and-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          cache: true
+
+      - name: Pre-pull postgres:17-alpine image
+        run: docker pull postgres:17-alpine
+
+      - name: Run PostgreSQL 17 workflow integration tests
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: go test -race -count=1 -timeout=15m ./internal/workflow
 
   release-gates-and-adversarial:
     name: Release Gates & Adversarial Suites (-race)
@@ -213,7 +239,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: "1.27.x"
           check-latest: true
           cache: true
 

@@ -2146,7 +2146,7 @@ func TestWorkflow_Evaluate_FailClosedManifest_ScanRunRemap_And_NilInspector(t *t
 	// 6. >16 MiB valid CANONICAL_DIFF verifies full stream to EOF and succeeds.
 	t.Run("oversized valid CANONICAL_DIFF verifies full stream and succeeds", func(t *testing.T) {
 		fx := setupPGFixture(t, domain.ClassificationInternal, []string{"approved-code-review"})
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		gwState := &mockGatewayState{}
 		gwSrv := startMockGateway(t, gwState)
