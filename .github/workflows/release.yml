@@ -9,11 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GIT_CONFIG_NOSYSTEM: "1"
-  GIT_CONFIG_GLOBAL: /dev/null
-  GIT_TERMINAL_PROMPT: "0"
-
 jobs:
   verify:
     name: Pre-Release Verification
@@ -21,12 +16,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache: true
 
       - name: Verify Go modules and tidiness
@@ -51,6 +47,10 @@ jobs:
           go run ./cmd/custodian-policy test policies/tests
 
       - name: Run short unit tests with race detector
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           go test -race -short -count=1 \
             ./api/... \
@@ -78,12 +78,13 @@ jobs:
             goarch: arm64
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache: true
 
       - name: Build and package release archive
@@ -119,7 +120,7 @@ jobs:
           rm -rf "$STAGE_DIR"
 
       - name: Upload release archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.tar.gz
@@ -136,7 +137,7 @@ jobs:
       contents: write
     steps:
       - name: Download release archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist

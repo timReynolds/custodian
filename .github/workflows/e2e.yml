@@ -31,11 +31,6 @@ concurrency:
   group: e2e-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  GIT_CONFIG_NOSYSTEM: "1"
-  GIT_CONFIG_GLOBAL: /dev/null
-  GIT_TERMINAL_PROMPT: "0"
-
 jobs:
   prepare:
     name: Build Binaries & Compute Shards
@@ -46,12 +41,13 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache: true
 
       - name: Build Custodian binaries
@@ -61,7 +57,7 @@ jobs:
         run: ./test/e2e/run_e2e.sh --compile-only --tier=all
 
       - name: Upload prebuilt binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: custodian-e2e-bins
           path: bin/
@@ -100,16 +96,17 @@ jobs:
         include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache: true
 
       - name: Download prebuilt binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: custodian-e2e-bins
           path: bin
@@ -122,6 +119,9 @@ jobs:
 
       - name: Run E2E shard
         env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
           CUSTODIAN_E2E_BIN_DIR: ${{ github.workspace }}/bin
           CUSTODIAN_E2E_ROOT: ${{ github.workspace }}
           SHARD_MODE: ${{ matrix.mode }}
