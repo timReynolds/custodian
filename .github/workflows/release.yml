@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Pre-Release Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          cache: true
+
+      - name: Verify Go modules and tidiness
+        run: |
+          go mod verify
+          go mod tidy -diff
+
+      - name: Run go vet
+        run: make vet
+
+      - name: Validate OpenAPI 3.1 contract offline
+        run: make openapi-validate
+
+      - name: Verify publisher dependency isolation
+        run: go test -v -count=1 -run TestPublisherDependencyIsolation ./internal/publication
+
+      - name: Validate CEL policy bundles and run policy test suites
+        run: |
+          for f in policies/defaults/*.yaml policies/examples/*.yaml; do
+            go run ./cmd/custodian-policy validate --bundle "$f"
+          done
+          go run ./cmd/custodian-policy test policies/tests
+
+      - name: Run short unit tests with race detector
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          go test -race -short -count=1 \
+            ./api/... \
+            ./cmd/... \
+            ./internal/... \
+            ./prompts/...
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs:
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          cache: true
+
+      - name: Build and package release archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            VERSION="$REF_NAME"
+          else
+            VERSION="dev-${COMMIT_SHA:0:7}"
+          fi
+
+          ARCHIVE_BASE="custodian_${VERSION}_${GOOS}_${GOARCH}"
+          STAGE_DIR="dist/${ARCHIVE_BASE}"
+          mkdir -p "$STAGE_DIR/policies/defaults"
+
+          for bin in custodian custodian-api custodian-worker custodian-publisher custodian-policy; do
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+              -trimpath \
+              -ldflags="-s -w" \
+              -o "$STAGE_DIR/$bin" \
+              "./cmd/$bin"
+          done
+
+          cp README.md "$STAGE_DIR/"
+          cp policies/defaults/default.yaml "$STAGE_DIR/policies/defaults/"
+
+          tar -C dist -czf "dist/${ARCHIVE_BASE}.tar.gz" "$ARCHIVE_BASE"
+          rm -rf "$STAGE_DIR"
+
+      - name: Upload release archive artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        run: (cd dist && sha256sum *.tar.gz > checksums.txt)
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          EXTRA_ARGS=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            EXTRA_ARGS+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" dist/*.tar.gz dist/checksums.txt \
+            --repo "$REPO" \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            "${EXTRA_ARGS[@]}"
