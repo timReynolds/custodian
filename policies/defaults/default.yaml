@@ -1,0 +1,92 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: engineering-default
+  version: "1.0.0"
+  scope: ORG
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+    trigger:
+      - restricted_ip_finding
+      - high_risk_change
+      - restricted_repository
+rules:
+  - id: secrets.block
+    description: Block any critical secret finding on ingress or egress.
+    stages: [INGRESS, EGRESS]
+    when: findings.critical_secrets > 0
+    effect: DENY
+    overridable: false
+    message: Critical secret detected by deterministic inspection.
+  - id: licenses.block
+    description: Block prohibited license findings on ingress or egress.
+    stages: [INGRESS, EGRESS]
+    when: findings.prohibited_licenses > 0
+    effect: DENY
+    overridable: false
+    message: Prohibited software license detected by deterministic inspection.
+  - id: scan.incomplete
+    description: Quarantine proposals or workspaces when mandatory scanners did not complete cleanly.
+    stages: [INGRESS, EGRESS]
+    when: "!findings.scan_complete"
+    effect: QUARANTINE
+    overridable: false
+    message: Mandatory deterministic inspection did not complete with full coverage.
+  - id: model.block
+    description: Deny egress proposals when contextual decision model disposition is BLOCK.
+    stages: [EGRESS]
+    when: assessment.disposition == "BLOCK"
+    effect: DENY
+    overridable: false
+    message: Contextual decision model blocked publication.
+  - id: model.indeterminate
+    description: Quarantine egress proposals when contextual assessment is not COMPLETE or disposition is INDETERMINATE.
+    stages: [EGRESS]
+    when: assessment.status != "COMPLETE" || assessment.disposition == "INDETERMINATE"
+    effect: QUARANTINE
+    overridable: false
+    message: Contextual decision model assessment is incomplete or indeterminate.
+  - id: ip.review
+    description: Require dedicated IP review when contextual IP risk is HIGH or CRITICAL.
+    stages: [EGRESS]
+    when: assessment.ip_risk in ["HIGH", "CRITICAL"]
+    effect: REQUIRE_APPROVAL
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: ip-review
+        minimum: 1
+    message: High or critical IP provenance risk requires IP reviewer approval.
+  - id: security.infrastructure
+    description: Require platform-owners approval for changes under infra/prod/.
+    stages: [EGRESS]
+    when: change.paths.exists(p, p.startsWith("infra/prod/"))
+    effect: REQUIRE_APPROVAL
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: platform-owners
+        minimum: 1
+    message: Production infrastructure modifications require platform-owners approval.
+  - id: ingress.allow
+    description: Allow clean repository ingress when mandatory scanners pass with zero critical secrets or prohibited licenses.
+    stages: [INGRESS]
+    when: >-
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.prohibited_licenses == 0
+    effect: ALLOW
+  - id: standard.allow
+    description: Allow clean proposal egress to proceed to mandatory human approval.
+    stages: [EGRESS]
+    when: >-
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.prohibited_licenses == 0
+    effect: ALLOW

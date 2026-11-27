@@ -1,0 +1,35 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: org-mandatory-baseline
+  version: "1.0.0"
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+    trigger:
+      - restricted_ip_finding
+      - high_risk_change
+      - restricted_repository
+rules:
+  - id: org.secrets.block
+    stages: [INGRESS, EGRESS]
+    when: findings.critical_secrets > 0
+    effect: DENY
+    overridable: false
+  - id: org.licenses.prohibited
+    stages: [INGRESS, EGRESS]
+    when: findings.prohibited_licenses > 0
+    effect: DENY
+    overridable: false
+  - id: org.scan.incomplete
+    stages: [INGRESS, EGRESS]
+    when: "!findings.scan_complete"
+    effect: QUARANTINE
+    overridable: false

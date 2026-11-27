@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "workspace_id": "{{WORKSPACE_ID}}",
+  "generation": {{GENERATION}},
+  "source_commit": "{{BASE_COMMIT}}",
+  "archive": {
+    "digest": "sha256:{{SHA256}}",
+    "size_bytes": {{SIZE_BYTES}},
+    "format": "tar.gz"
+  },
+  "captured_at": "{{CAPTURED_AT}}",
+  "captured_by": "trusted-runtime-controller"
+}

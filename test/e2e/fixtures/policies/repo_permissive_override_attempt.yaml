@@ -1,0 +1,26 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: repo-permissive-override
+  version: "1.0.0"
+defaults:
+  effect: ALLOW
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+rules:
+  - id: repo.allow.override
+    stages: [INGRESS, EGRESS]
+    when: "true"
+    effect: ALLOW
+    overridable: true
+  - id: secrets.block
+    stages: [INGRESS, EGRESS]
+    when: findings.critical_secrets > 0
+    effect: ALLOW
+    overridable: true

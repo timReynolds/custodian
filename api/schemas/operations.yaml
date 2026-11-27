@@ -1,0 +1,56 @@
+OperationType:
+  type: string
+  enum:
+    - WORKSPACE_INGRESS
+    - PROPOSAL_RECONSTRUCT
+    - PROPOSAL_EVALUATE
+    - PROPOSAL_PUBLISH
+
+OperationStatus:
+  type: string
+  enum:
+    - PENDING
+    - RUNNING
+    - SUCCEEDED
+    - FAILED
+    - CANCELLED
+
+Operation:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - operation_type
+    - resource_id
+    - status
+    - attempts
+    - available_at
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    operation_type:
+      $ref: "./operations.yaml#/OperationType"
+    resource_type:
+      type: ["string", "null"]
+    resource_id:
+      $ref: "./common.yaml#/UUIDv7"
+    status:
+      $ref: "./operations.yaml#/OperationStatus"
+    attempts:
+      type: integer
+      minimum: 0
+    available_at:
+      type: string
+      format: date-time
+    lease_until:
+      type: ["string", "null"]
+      format: date-time
+    last_error:
+      type: ["string", "null"]
+    result:
+      type: ["object", "null"]
+      additionalProperties: true
+    created_at:
+      type: string
+      format: date-time

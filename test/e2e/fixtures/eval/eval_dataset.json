@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "eval-clean-01",
+    "fixture_file": "stageb_clean.json",
+    "repo_classification": "INTERNAL",
+    "model_route_authorised": true,
+    "stage_a_evidence_ids": [],
+    "expect_schema_valid": true,
+    "expect_grounded": true,
+    "expect_status": "COMPLETE",
+    "expect_publish_allowed": true,
+    "expected_cel_effect": "ALLOW"
+  },
+  {
+    "case_id": "eval-high-risk-ip-02",
+    "fixture_file": "stageb_high_risk_ip_security.json",
+    "repo_classification": "CONFIDENTIAL",
+    "model_route_authorised": true,
+    "stage_a_evidence_ids": [
+      "finding_ip_001"
+    ],
+    "expect_schema_valid": true,
+    "expect_grounded": true,
+    "expect_status": "COMPLETE",
+    "expect_publish_allowed": false,
+    "expected_cel_effect": "REQUIRE_APPROVAL"
+  },
+  {
+    "case_id": "eval-prompt-injection-03",
+    "fixture_file": "stageb_prompt_injection.json",
+    "repo_classification": "INTERNAL",
+    "model_route_authorised": true,
+    "stage_a_evidence_ids": [
+      "finding_secret_001"
+    ],
+    "expect_schema_valid": true,
+    "expect_grounded": true,
+    "expect_status": "COMPLETE",
+    "expect_publish_allowed": false,
+    "expected_cel_effect": "DENY"
+  },
+  {
+    "case_id": "eval-indeterminate-route-04",
+    "fixture_file": "stageb_indeterminate.json",
+    "repo_classification": "RESTRICTED",
+    "model_route_authorised": false,
+    "stage_a_evidence_ids": [],
+    "expect_schema_valid": true,
+    "expect_grounded": true,
+    "expect_status": "INDETERMINATE",
+    "expect_publish_allowed": false,
+    "expected_cel_effect": "QUARANTINE"
+  },
+  {
+    "case_id": "eval-ungrounded-evidence-05",
+    "fixture_file": "stageb_ungrounded_evidence.json",
+    "repo_classification": "INTERNAL",
+    "model_route_authorised": true,
+    "stage_a_evidence_ids": [
+      "finding_real_001"
+    ],
+    "expect_schema_valid": true,
+    "expect_grounded": false,
+    "expect_status": "FAILED",
+    "expect_publish_allowed": false,
+    "expected_cel_effect": "QUARANTINE"
+  },
+  {
+    "case_id": "eval-unknown-disposition-06",
+    "fixture_file": "stageb_unknown_disposition.json",
+    "repo_classification": "INTERNAL",
+    "model_route_authorised": true,
+    "stage_a_evidence_ids": [],
+    "expect_schema_valid": false,
+    "expect_grounded": true,
+    "expect_status": "FAILED",
+    "expect_publish_allowed": false,
+    "expected_cel_effect": "QUARANTINE"
+  },
+  {
+    "case_id": "eval-malformed-json-07",
+    "fixture_file": "stageb_malformed.txt",
+    "repo_classification": "INTERNAL",
+    "model_route_authorised": true,
+    "stage_a_evidence_ids": [],
+    "expect_schema_valid": false,
+    "expect_grounded": false,
+    "expect_status": "FAILED",
+    "expect_publish_allowed": false,
+    "expected_cel_effect": "QUARANTINE"
+  }
+]

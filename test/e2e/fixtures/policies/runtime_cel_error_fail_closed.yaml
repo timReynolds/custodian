@@ -1,0 +1,24 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: runtime-cel-error-fail-closed
+  version: "1.0.0"
+defaults:
+  effect: ALLOW
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+rules:
+  - id: runtime.oob
+    stages: [EGRESS]
+    when: 'change.paths[99] == "never"'
+    effect: ALLOW
+  - id: runtime.divzero
+    stages: [EGRESS]
+    when: "(10 / findings.critical_secrets) > 1"
+    effect: ALLOW

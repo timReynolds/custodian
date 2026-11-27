@@ -1,0 +1,119 @@
+apiVersion: custodian.dev/v1
+kind: PolicyTestSuite
+metadata:
+  name: restricted-ip-policy-suite
+  description: Verifies mandatory IP review, SAST remediation, and fail-closed controls for restricted IP repositories.
+bundle: ../examples/restricted_ip_repo.yaml
+cases:
+  - name: clean_egress_still_requires_ip_review
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_sast_findings: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: LOW
+      change:
+        paths: ["engine/core.go"]
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [restricted.ip.review]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: ip-review
+          minimum: 1
+
+  - name: high_sast_triggers_remediation
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_sast_findings: 1
+      assessment:
+        status: COMPLETE
+        ip_risk: LOW
+      change:
+        paths: ["engine/exec.go"]
+    expect:
+      effect: REQUIRE_REMEDIATION
+      matched_rules: [restricted.sast.remediation, restricted.ip.review]
+
+  - name: secret_triggers_deny_even_with_ip_review
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 1
+        prohibited_licenses: 0
+      assessment:
+        status: COMPLETE
+        ip_risk: LOW
+      change:
+        paths: ["engine/keys.go"]
+    expect:
+      effect: DENY
+      matched_rules: [restricted.secrets.block, restricted.ip.review]
+
+  - name: stage_b_block_code_review_denies
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_sast_findings: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: NONE
+        assessment_type: CODE_REVIEW
+      change:
+        paths: ["engine/core.go"]
+    expect:
+      effect: DENY
+      matched_rules: [restricted.model.block, restricted.ip.review]
+
+  - name: stage_b_block_ip_provenance_denies
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_sast_findings: 0
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        risk: CRITICAL
+        ip_risk: CRITICAL
+        assessment_type: IP_PROVENANCE
+      change:
+        paths: ["engine/core.go"]
+    expect:
+      effect: DENY
+      matched_rules: [restricted.model.block, restricted.ip.review]
+
+  - name: stage_b_indeterminate_disposition_quarantines
+    stage: EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 0
+        prohibited_licenses: 0
+        high_sast_findings: 0
+      assessment:
+        status: COMPLETE
+        disposition: INDETERMINATE
+        risk: NONE
+        ip_risk: NONE
+      change:
+        paths: ["engine/core.go"]
+    expect:
+      effect: QUARANTINE
+      matched_rules: [restricted.model.indeterminate, restricted.ip.review]

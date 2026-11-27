@@ -1,0 +1,10 @@
+{
+  "schema_version": "1",
+  "assessment_type": "SECURITY_REVIEW",
+  "risk": "LOW",
+  "disposition": "SHIP_IT_NOW",
+  "confidence": 0.95,
+  "summary": "Unknown disposition value must be rejected",
+  "findings": [],
+  "limitations": []
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "assessment_type": "IP_PROVENANCE",
+  "risk": "HIGH",
+  "disposition": "REVIEW",
+  "confidence": 0.81,
+  "summary": "References ungrounded evidence identifier",
+  "findings": [
+    {
+      "category": "SOURCE_SIMILARITY",
+      "evidence_ids": [
+        "nonexistent_finding_999"
+      ],
+      "reason": "Fabricated evidence ID not present in Stage A findings",
+      "recommended_action": "IP_REVIEW"
+    }
+  ],
+  "limitations": []
+}

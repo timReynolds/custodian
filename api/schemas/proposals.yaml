@@ -1,0 +1,360 @@
+ProposalStatus:
+  type: string
+  enum:
+    - CAPTURED
+    - RECONSTRUCTING
+    - RECONSTRUCTED
+    - EVALUATING
+    - PENDING_APPROVAL
+    - DENIED
+    - QUARANTINED
+    - REMEDIATION_REQUIRED
+    - REJECTED
+    - APPROVED
+    - PUBLISHING
+    - PUBLISHED
+    - FAILED
+
+SnapshotCaptureInput:
+  type: object
+  additionalProperties: false
+  required:
+    - artifact_id
+    - sha256
+    - workspace_generation
+  properties:
+    artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    sha256:
+      $ref: "./common.yaml#/SHA256Digest"
+    workspace_generation:
+      type: integer
+      format: int64
+      minimum: 1
+    size_bytes:
+      type: integer
+      format: int64
+      minimum: 1
+    captured_at:
+      type: string
+      format: date-time
+
+SubmitProposalRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - snapshot
+    - title
+  properties:
+    snapshot:
+      $ref: "./proposals.yaml#/SnapshotCaptureInput"
+    title:
+      type: string
+      minLength: 1
+      maxLength: 256
+    description:
+      type: string
+      maxLength: 8192
+    provenance:
+      $ref: "./common.yaml#/Provenance"
+
+SubmitProposalResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - proposal_id
+    - workspace_id
+    - operation_id
+    - base_commit
+    - target_ref
+    - status
+    - version
+    - created_at
+  properties:
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    workspace_id:
+      $ref: "./common.yaml#/UUIDv7"
+    operation_id:
+      $ref: "./common.yaml#/UUIDv7"
+    base_commit:
+      $ref: "./common.yaml#/CommitSHA"
+    target_ref:
+      type: string
+    status:
+      $ref: "./proposals.yaml#/ProposalStatus"
+    version:
+      type: integer
+      format: int64
+      minimum: 1
+    created_at:
+      type: string
+      format: date-time
+
+ProposalOrigin:
+  type: object
+  additionalProperties: false
+  required:
+    - workspace_id
+  properties:
+    workspace_id:
+      $ref: "./common.yaml#/UUIDv7"
+    agent_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    agent_session_id:
+      type: ["string", "null"]
+    model_route:
+      type: ["string", "null"]
+
+Proposal:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - workspace_id
+    - title
+    - owner
+    - origin
+    - repository
+    - provenance
+    - snapshot_artifact_id
+    - status
+    - version
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    workspace_id:
+      $ref: "./common.yaml#/UUIDv7"
+    title:
+      type: string
+    description:
+      type: ["string", "null"]
+    owner:
+      $ref: "./common.yaml#/PrincipalRef"
+    origin:
+      $ref: "./proposals.yaml#/ProposalOrigin"
+    repository:
+      $ref: "./common.yaml#/RepositoryRef"
+    provenance:
+      $ref: "./common.yaml#/Provenance"
+    snapshot_artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    canonical_artifact_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    manifest_artifact_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    tree_digest:
+      type: ["string", "null"]
+      minLength: 40
+      maxLength: 64
+    diff_digest:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+    publication_manifest_digest:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+    latest_policy_evaluation_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    latest_policy_effect:
+      anyOf:
+        - $ref: "./inspection.yaml#/PolicyEffect"
+        - type: "null"
+    status:
+      $ref: "./proposals.yaml#/ProposalStatus"
+    version:
+      type: integer
+      format: int64
+      minimum: 1
+    created_at:
+      type: string
+      format: date-time
+
+ChangedFile:
+  type: object
+  additionalProperties: false
+  required:
+    - path
+    - change_type
+    - size_bytes
+  properties:
+    path:
+      type: string
+    change_type:
+      type: string
+      enum:
+        - ADDED
+        - MODIFIED
+        - DELETED
+        - RENAMED
+    old_path:
+      type: ["string", "null"]
+    size_bytes:
+      type: integer
+      format: int64
+      minimum: 0
+    sha256:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+
+ProposalDiff:
+  type: object
+  additionalProperties: false
+  required:
+    - proposal_id
+    - base_commit
+    - tree_digest
+    - diff_digest
+    - publication_manifest_digest
+    - paths
+    - unified_diff
+  properties:
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    base_commit:
+      $ref: "./common.yaml#/CommitSHA"
+    tree_digest:
+      type: string
+      minLength: 40
+      maxLength: 64
+    diff_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    publication_manifest_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    paths:
+      type: array
+      items:
+        $ref: "./proposals.yaml#/ChangedFile"
+    unified_diff:
+      type: string
+    truncated:
+      type: boolean
+      default: false
+    diff_artifact_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+
+EvaluateProposalRequest:
+  type: object
+  additionalProperties: false
+  properties:
+    expected_version:
+      type: integer
+      format: int64
+      minimum: 1
+
+EvaluateProposalResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - proposal_id
+    - operation_id
+    - status
+    - version
+  properties:
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    operation_id:
+      $ref: "./common.yaml#/UUIDv7"
+    status:
+      $ref: "./proposals.yaml#/ProposalStatus"
+    version:
+      type: integer
+      format: int64
+      minimum: 1
+    policy_decision:
+      anyOf:
+        - $ref: "./inspection.yaml#/PolicyDecision"
+        - type: "null"
+
+Obligation:
+  type: object
+  additionalProperties: false
+  required:
+    - type
+    - reviewer_group
+    - minimum
+  properties:
+    type:
+      type: string
+      minLength: 1
+    reviewer_group:
+      type: string
+      minLength: 1
+    minimum:
+      type: integer
+      minimum: 1
+
+CreateApprovalRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - decision
+    - publication_manifest_digest
+    - policy_evaluation_id
+  properties:
+    decision:
+      type: string
+      enum:
+        - APPROVE
+        - REJECT
+    publication_manifest_digest:
+      $ref: "./common.yaml#/SHA256Digest"
+    policy_evaluation_id:
+      $ref: "./common.yaml#/UUIDv7"
+    comment:
+      type: string
+      maxLength: 4096
+
+ApprovalResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - proposal_id
+    - reviewer_id
+    - policy_decision_id
+    - manifest_digest
+    - decision
+    - proposal_status
+    - remaining_obligations
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    reviewer_id:
+      $ref: "./common.yaml#/UUIDv7"
+    policy_decision_id:
+      $ref: "./common.yaml#/UUIDv7"
+    manifest_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    decision:
+      type: string
+      enum:
+        - APPROVE
+        - REJECT
+    comment:
+      type: ["string", "null"]
+    proposal_status:
+      $ref: "./proposals.yaml#/ProposalStatus"
+    remaining_obligations:
+      type: array
+      items:
+        $ref: "./proposals.yaml#/Obligation"
+    created_at:
+      type: string
+      format: date-time

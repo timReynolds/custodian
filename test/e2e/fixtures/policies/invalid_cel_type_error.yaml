@@ -1,0 +1,20 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: invalid-cel-type-error
+  version: "1.0.0"
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+rules:
+  - id: bad.type
+    stages: [EGRESS]
+    when: 'findings.critical_secrets == "zero"'
+    effect: ALLOW

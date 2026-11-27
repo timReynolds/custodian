@@ -1,0 +1,1028 @@
+openapi: "3.1.0"
+info:
+  title: Custodian API
+  version: "1.0.0"
+  description: |
+    Policy-governed Git ingress and egress broker REST API.
+    Enforces verifiable human ownership, credentialless workspaces, immutable artifact custody,
+    three-stage inspection (deterministic scanners, decision model, CEL policies),
+    digest-bound human approvals, and isolated PR publication on `custodian/<proposal-id>`.
+servers:
+  - url: /
+    description: Default relative server root
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Workspaces
+  - name: Proposals
+  - name: Inspection
+  - name: Approvals
+  - name: Publication
+  - name: Policies
+  - name: Operations
+  - name: Audit
+  - name: Pushes
+  - name: Repositories
+  - name: IPCorpora
+
+paths:
+  /v1/workspaces:
+    post:
+      tags: [Workspaces]
+      operationId: createWorkspace
+      summary: Authorise repository, pin base commit, and enqueue credentialless ingress checkout.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/workspaces.yaml#/CreateWorkspaceRequest"
+      responses:
+        "202":
+          description: Workspace accepted for asynchronous ingress preparation.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/workspaces.yaml#/CreateWorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/workspaces/{id}:
+    get:
+      tags: [Workspaces]
+      operationId: getWorkspace
+      summary: Retrieve workspace status, pinned commit, owner/agent provenance, and artifact reference.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Workspace details.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/workspaces.yaml#/Workspace"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/workspaces/{id}/source:
+    get:
+      tags: [Workspaces]
+      operationId: getWorkspaceSource
+      summary: Retrieve authorised credentialless source artifact descriptor and upload capability.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Source artifact descriptor and optional upload-only snapshot capability.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/workspaces.yaml#/SourceArtifactDescriptor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/workspaces/{id}/proposals:
+    post:
+      tags: [Proposals]
+      operationId: submitProposal
+      summary: Submit a frozen egress snapshot capture for clean base reconstruction.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/proposals.yaml#/SubmitProposalRequest"
+      responses:
+        "202":
+          description: Proposal accepted for canonical reconstruction.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/proposals.yaml#/SubmitProposalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}:
+    get:
+      tags: [Proposals]
+      operationId: getProposal
+      summary: Retrieve proposal status, optimistic version, provenance, digests, and latest policy effect.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Proposal details.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/proposals.yaml#/Proposal"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}/diff:
+    get:
+      tags: [Proposals]
+      operationId: getProposalDiff
+      summary: Retrieve canonical reconstructed Git diff, changed paths, and canonical digests.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Canonical proposal diff.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/proposals.yaml#/ProposalDiff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}/findings:
+    get:
+      tags: [Inspection]
+      operationId: listProposalFindings
+      summary: List Stage A scanner runs (with coverage accounting) and redacted findings.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - name: scanner
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: severity
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/inspection.yaml#/Severity"
+        - $ref: "#/components/parameters/CursorParam"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Scanner runs and redacted findings.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/inspection.yaml#/ProposalFindingsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}/assessments:
+    get:
+      tags: [Inspection]
+      operationId: listProposalAssessments
+      summary: List Stage B model assessments and Stage C persisted policy decisions.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Model assessments and persisted policy decisions.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/inspection.yaml#/ProposalAssessmentsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}/evaluate:
+    post:
+      tags: [Inspection]
+      operationId: evaluateProposal
+      summary: Trigger Stage A scanners, Stage B decision model, and Stage C CEL policy evaluation.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+        - $ref: "#/components/parameters/IfMatchOptional"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/proposals.yaml#/EvaluateProposalRequest"
+      responses:
+        "202":
+          description: Evaluation queued or completed with persisted policy decision.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/proposals.yaml#/EvaluateProposalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}/approvals:
+    post:
+      tags: [Approvals]
+      operationId: approveProposal
+      summary: Record human APPROVE or REJECT bound to exact publication_manifest_digest.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/proposals.yaml#/CreateApprovalRequest"
+      responses:
+        "201":
+          description: Human approval decision recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/proposals.yaml#/ApprovalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/proposals/{id}/publish:
+    post:
+      tags: [Publication]
+      operationId: publishProposal
+      summary: Publish approved proposal to broker-owned branch custodian/<proposal-id> and open a single PR.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/publications.yaml#/PublishProposalRequest"
+      responses:
+        "202":
+          description: Publication accepted or returned idempotently.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/publications.yaml#/PublishProposalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/publications/{id}:
+    get:
+      tags: [Publication]
+      operationId: getPublication
+      summary: Retrieve publication status, commit SHA, branch ref, and PR metadata.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Publication details.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/publications.yaml#/Publication"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/policies/validate:
+    post:
+      tags: [Policies]
+      operationId: validatePolicy
+      summary: Compile and validate a YAML PolicyBundle (and optional test cases) via cel-go.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyOptional"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/policies.yaml#/ValidatePolicyRequest"
+      responses:
+        "200":
+          description: Validation result for the PolicyBundle.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/policies.yaml#/ValidatePolicyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/policies/evaluate:
+    post:
+      tags: [Policies]
+      operationId: simulatePolicy
+      summary: Simulate CEL policy evaluation (with optional org-before-repo composition) without mutating proposal state.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyOptional"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/policies.yaml#/SimulatePolicyRequest"
+      responses:
+        "200":
+          description: Simulated policy decision.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/policies.yaml#/SimulatePolicyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/operations/{id}:
+    get:
+      tags: [Operations]
+      operationId: getOperation
+      summary: Poll asynchronous operation status, attempt count, lease state, and safe result.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Operation status.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/operations.yaml#/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/audit/events:
+    get:
+      tags: [Audit]
+      operationId: listAuditEvents
+      summary: Query immutable hash-chained audit events with filters and cursor pagination.
+      parameters:
+        - name: resource_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: resource_id
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/common.yaml#/UUIDv7"
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: actor_id
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/common.yaml#/UUIDv7"
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated list of hash-chained audit events.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/audit.yaml#/AuditEventsListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/pushes:
+    get:
+      tags: [Pushes]
+      operationId: listPushes
+      summary: List push gateway sessions with optional filters and cursor pagination.
+      parameters:
+        - name: repository_id
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/common.yaml#/UUIDv7"
+        - name: principal_id
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/common.yaml#/UUIDv7"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/pushes.yaml#/PushSessionStatus"
+        - name: egress_mode
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/pushes.yaml#/EgressMode"
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated list of push sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/pushes.yaml#/PushListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/pushes/{id}:
+    get:
+      tags: [Pushes]
+      operationId: getPush
+      summary: Retrieve push gateway session details, scan runs, sanitized findings, assessments, policy decisions, and approval releases.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Push session details.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/pushes.yaml#/PushSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/pushes/{id}/approvals:
+    post:
+      tags: [Pushes, Approvals]
+      operationId: approvePush
+      summary: Issue or reject a single-use expiring push approval release bound to principal, destination, and push_manifest_digest.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/pushes.yaml#/ApprovePushRequest"
+      responses:
+        "201":
+          description: Push approval release recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/pushes.yaml#/PushApprovalReleaseResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/repositories/{id}/egress-mode:
+    put:
+      tags: [Repositories]
+      operationId: setRepositoryEgressMode
+      summary: Configure repository push egress mode, passive audit delivery, and destination registry metadata.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/repositories.yaml#/SetRepositoryEgressModeRequest"
+      responses:
+        "200":
+          description: Repository egress mode updated.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/repositories.yaml#/RepositoryEgressModeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/ip-corpora:
+    get:
+      tags: [IPCorpora]
+      operationId: listIPCorpora
+      summary: List registered CONFIDENTIAL and RESTRICTED IP fingerprint corpora metadata.
+      parameters:
+        - name: classification
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/ip_corpora.yaml#/IPCorpusClassification"
+        - name: enabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated list of IP fingerprint corpora metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/ip_corpora.yaml#/IPCorporaListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [IPCorpora]
+      operationId: createIPCorpus
+      summary: Register an IP fingerprint corpus (metadata-only persistence; zero raw source stored).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/ip_corpora.yaml#/CreateIPCorpusRequest"
+      responses:
+        "201":
+          description: IP fingerprint corpus registered.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/ip_corpora.yaml#/IPCorpus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/ip-corpora/{id}/reindex:
+    post:
+      tags: [IPCorpora]
+      operationId: reindexIPCorpus
+      summary: Trigger deterministic IP corpus fingerprinting/reindexing without exposing raw source.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusRequest"
+      responses:
+        "202":
+          description: IP corpus reindex accepted or completed.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC ID/access JWT or workload identity bearer token.
+
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      description: Resource UUIDv7 identifier.
+      schema:
+        $ref: "./schemas/common.yaml#/UUIDv7"
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-supplied idempotency key scoped per principal, method, and path.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]{1,128}$"
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Optional idempotency key for stateless validation/simulation requests.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]{1,128}$"
+    IfMatchOptional:
+      name: If-Match
+      in: header
+      required: false
+      description: Optional optimistic version precondition matching the proposal's current version.
+      schema:
+        type: string
+        pattern: "^(W/)?\"?[1-9][0-9]*\"?$"
+    CursorParam:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+
+  responses:
+    BadRequest:
+      description: Malformed request, unknown fields, or invalid input.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    Unauthorized:
+      description: Missing, invalid, or expired bearer token or capability.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    Forbidden:
+      description: Caller not authorised, policy denied, or separation-of-duties violation.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    Conflict:
+      description: Optimistic version conflict, stale manifest digest, state conflict, or idempotency payload mismatch.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    UnprocessableEntity:
+      description: Unsafe archive, invalid Git ref, digest mismatch, or schema validation failure.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    RateLimited:
+      description: Per-repository concurrency or global scan/model budget exceeded.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+    ServiceUnavailable:
+      description: Backing dependency (PostgreSQL, snapshot store, or GitHub) unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/errors.yaml#/ErrorResponse"
+
+  schemas:
+    UUIDv7:
+      $ref: "./schemas/common.yaml#/UUIDv7"
+    CommitSHA:
+      $ref: "./schemas/common.yaml#/CommitSHA"
+    SHA256Hex:
+      $ref: "./schemas/common.yaml#/SHA256Hex"
+    SHA256Digest:
+      $ref: "./schemas/common.yaml#/SHA256Digest"
+    ErrorResponse:
+      $ref: "./schemas/errors.yaml#/ErrorResponse"
+    CreateWorkspaceRequest:
+      $ref: "./schemas/workspaces.yaml#/CreateWorkspaceRequest"
+    CreateWorkspaceResponse:
+      $ref: "./schemas/workspaces.yaml#/CreateWorkspaceResponse"
+    Workspace:
+      $ref: "./schemas/workspaces.yaml#/Workspace"
+    SourceArtifactDescriptor:
+      $ref: "./schemas/workspaces.yaml#/SourceArtifactDescriptor"
+    SubmitProposalRequest:
+      $ref: "./schemas/proposals.yaml#/SubmitProposalRequest"
+    SubmitProposalResponse:
+      $ref: "./schemas/proposals.yaml#/SubmitProposalResponse"
+    Proposal:
+      $ref: "./schemas/proposals.yaml#/Proposal"
+    ProposalDiff:
+      $ref: "./schemas/proposals.yaml#/ProposalDiff"
+    EvaluateProposalRequest:
+      $ref: "./schemas/proposals.yaml#/EvaluateProposalRequest"
+    EvaluateProposalResponse:
+      $ref: "./schemas/proposals.yaml#/EvaluateProposalResponse"
+    CreateApprovalRequest:
+      $ref: "./schemas/proposals.yaml#/CreateApprovalRequest"
+    ApprovalResponse:
+      $ref: "./schemas/proposals.yaml#/ApprovalResponse"
+    ProposalFindingsResponse:
+      $ref: "./schemas/inspection.yaml#/ProposalFindingsResponse"
+    ProposalAssessmentsResponse:
+      $ref: "./schemas/inspection.yaml#/ProposalAssessmentsResponse"
+    PublishProposalRequest:
+      $ref: "./schemas/publications.yaml#/PublishProposalRequest"
+    PublishProposalResponse:
+      $ref: "./schemas/publications.yaml#/PublishProposalResponse"
+    Publication:
+      $ref: "./schemas/publications.yaml#/Publication"
+    ValidatePolicyRequest:
+      $ref: "./schemas/policies.yaml#/ValidatePolicyRequest"
+    ValidatePolicyResponse:
+      $ref: "./schemas/policies.yaml#/ValidatePolicyResponse"
+    SimulatePolicyRequest:
+      $ref: "./schemas/policies.yaml#/SimulatePolicyRequest"
+    SimulatePolicyResponse:
+      $ref: "./schemas/policies.yaml#/SimulatePolicyResponse"
+    Operation:
+      $ref: "./schemas/operations.yaml#/Operation"
+    AuditEventsListResponse:
+      $ref: "./schemas/audit.yaml#/AuditEventsListResponse"
+    PushSession:
+      $ref: "./schemas/pushes.yaml#/PushSession"
+    PushListResponse:
+      $ref: "./schemas/pushes.yaml#/PushListResponse"
+    ApprovePushRequest:
+      $ref: "./schemas/pushes.yaml#/ApprovePushRequest"
+    PushApprovalReleaseResponse:
+      $ref: "./schemas/pushes.yaml#/PushApprovalReleaseResponse"
+    SetRepositoryEgressModeRequest:
+      $ref: "./schemas/repositories.yaml#/SetRepositoryEgressModeRequest"
+    RepositoryEgressModeResponse:
+      $ref: "./schemas/repositories.yaml#/RepositoryEgressModeResponse"
+    CreateIPCorpusRequest:
+      $ref: "./schemas/ip_corpora.yaml#/CreateIPCorpusRequest"
+    IPCorpus:
+      $ref: "./schemas/ip_corpora.yaml#/IPCorpus"
+    IPCorporaListResponse:
+      $ref: "./schemas/ip_corpora.yaml#/IPCorporaListResponse"
+    ReindexIPCorpusRequest:
+      $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusRequest"
+    ReindexIPCorpusResponse:
+      $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusResponse"

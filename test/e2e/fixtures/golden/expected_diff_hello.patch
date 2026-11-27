@@ -1,0 +1,15 @@
+diff --git a/pkg/hello/hello.go b/pkg/hello/hello.go
+new file mode 100644
+index 0000000..f4f8d2b
+--- /dev/null
++++ b/pkg/hello/hello.go
+@@ -0,0 +1,9 @@
++package hello
++
++// Greeting returns a deterministic greeting for E2E golden verification.
++func Greeting(name string) string {
++	if name == "" {
++		return "hello, custodian"
++	}
++	return "hello, " + name
++}

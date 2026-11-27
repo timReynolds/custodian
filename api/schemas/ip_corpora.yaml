@@ -1,0 +1,209 @@
+IPCorpusClassification:
+  type: string
+  enum:
+    - CONFIDENTIAL
+    - RESTRICTED
+
+IPCorpusStatus:
+  type: string
+  enum:
+    - PENDING
+    - INDEXING
+    - READY
+    - FAILED
+
+IPCorpusFileInput:
+  type: object
+  additionalProperties: false
+  required:
+    - path
+  properties:
+    path:
+      type: string
+      minLength: 1
+      maxLength: 1024
+    content:
+      type: string
+    sha256:
+      $ref: "./common.yaml#/SHA256Digest"
+
+CreateIPCorpusRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - name
+    - classification
+  properties:
+    name:
+      type: string
+      minLength: 1
+      maxLength: 255
+    classification:
+      $ref: "./ip_corpora.yaml#/IPCorpusClassification"
+    description:
+      type: string
+      maxLength: 4096
+    repository_id:
+      $ref: "./common.yaml#/UUIDv7"
+    source_ref:
+      type: string
+      minLength: 1
+      maxLength: 256
+    source_path:
+      type: string
+      minLength: 1
+      maxLength: 1024
+    files:
+      type: array
+      minItems: 1
+      items:
+        $ref: "./ip_corpora.yaml#/IPCorpusFileInput"
+    winnow_k:
+      type: integer
+      minimum: 1
+      maximum: 256
+    winnow_w:
+      type: integer
+      minimum: 1
+      maximum: 256
+    chunk_size_bytes:
+      type: integer
+      minimum: 64
+      maximum: 1048576
+    enabled:
+      type: boolean
+
+IPCorpus:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - name
+    - classification
+    - status
+    - fingerprint_count
+    - created_at
+    - updated_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    name:
+      type: string
+    description:
+      type: ["string", "null"]
+    classification:
+      $ref: "./ip_corpora.yaml#/IPCorpusClassification"
+    repository_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    source_ref:
+      type: ["string", "null"]
+    winnow_k:
+      type: integer
+    winnow_w:
+      type: integer
+    chunk_size_bytes:
+      type: integer
+    enabled:
+      type: boolean
+    status:
+      $ref: "./ip_corpora.yaml#/IPCorpusStatus"
+    fingerprint_count:
+      type: integer
+      format: int64
+      minimum: 0
+    last_indexed_digest:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+    last_indexed_at:
+      type: ["string", "null"]
+      format: date-time
+    last_error:
+      type: ["string", "null"]
+    created_by:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+IPCorporaListResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - corpora
+    - has_more
+  properties:
+    corpora:
+      type: array
+      items:
+        $ref: "./ip_corpora.yaml#/IPCorpus"
+    next_cursor:
+      type: ["string", "null"]
+    has_more:
+      type: boolean
+
+ReindexIPCorpusRequest:
+  type: object
+  additionalProperties: false
+  properties:
+    force:
+      type: boolean
+      default: false
+    source_ref:
+      type: string
+      minLength: 1
+      maxLength: 256
+    source_path:
+      type: string
+      minLength: 1
+      maxLength: 1024
+    files:
+      type: array
+      minItems: 1
+      items:
+        $ref: "./ip_corpora.yaml#/IPCorpusFileInput"
+
+ReindexIPCorpusResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - corpus_id
+    - status
+    - fingerprints_indexed
+  properties:
+    corpus_id:
+      $ref: "./common.yaml#/UUIDv7"
+    operation_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    status:
+      type: string
+      enum:
+        - PENDING
+        - INDEXING
+        - READY
+        - COMPLETED
+        - FAILED
+    fingerprints_indexed:
+      type: integer
+      format: int64
+      minimum: 0
+    files_processed:
+      type: integer
+      format: int64
+      minimum: 0
+    last_indexed_digest:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+    completed_at:
+      type: ["string", "null"]
+      format: date-time

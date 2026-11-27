@@ -1,0 +1,52 @@
+AuditEvent:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - event_type
+    - resource_type
+    - resource_id
+    - payload
+    - event_hash
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    event_type:
+      type: string
+    actor_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    resource_type:
+      type: string
+    resource_id:
+      $ref: "./common.yaml#/UUIDv7"
+    payload:
+      type: object
+      additionalProperties: true
+    previous_hash:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+    event_hash:
+      $ref: "./common.yaml#/SHA256Hex"
+    created_at:
+      type: string
+      format: date-time
+
+AuditEventsListResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - events
+    - has_more
+  properties:
+    events:
+      type: array
+      items:
+        $ref: "./audit.yaml#/AuditEvent"
+    next_cursor:
+      type: ["string", "null"]
+    has_more:
+      type: boolean

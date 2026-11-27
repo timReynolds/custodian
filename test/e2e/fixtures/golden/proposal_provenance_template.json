@@ -1,0 +1,21 @@
+{
+  "owner": {
+    "principal_id": "{{OWNER_PRINCIPAL_ID}}",
+    "identity_provider": "{{OIDC_ISSUER}}"
+  },
+  "origin": {
+    "workspace_id": "{{WORKSPACE_ID}}",
+    "agent_id": "{{AGENT_ID}}",
+    "agent_session_id": "{{AGENT_SESSION_ID}}",
+    "model_route": "{{MODEL_ROUTE}}"
+  },
+  "repository": {
+    "provider_id": {{GITHUB_REPOSITORY_ID}},
+    "base_commit": "{{BASE_COMMIT}}",
+    "target_ref": "{{TARGET_REF}}"
+  },
+  "provenance": {
+    "type": "agent_assisted",
+    "capture_method": "frozen_filesystem"
+  }
+}

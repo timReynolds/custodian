@@ -1,0 +1,89 @@
+PublicationStatus:
+  type: string
+  enum:
+    - PENDING
+    - PUBLISHING
+    - PUBLISHED
+    - FAILED
+
+PublishProposalRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - publication_manifest_digest
+  properties:
+    publication_manifest_digest:
+      $ref: "./common.yaml#/SHA256Digest"
+
+PublishProposalResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - publication_id
+    - proposal_id
+    - operation_id
+    - branch_ref
+    - status
+    - created_at
+  properties:
+    publication_id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    operation_id:
+      $ref: "./common.yaml#/UUIDv7"
+    branch_ref:
+      type: string
+      pattern: "^custodian/[0-9a-fA-F-]+$"
+    status:
+      $ref: "./publications.yaml#/PublicationStatus"
+    commit_sha:
+      anyOf:
+        - $ref: "./common.yaml#/CommitSHA"
+        - type: "null"
+    pull_request_number:
+      type: ["integer", "null"]
+      format: int64
+    pull_request_url:
+      type: ["string", "null"]
+      format: uri
+    created_at:
+      type: string
+      format: date-time
+
+Publication:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - proposal_id
+    - branch_ref
+    - status
+    - attempt_count
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    branch_ref:
+      type: string
+      pattern: "^custodian/[0-9a-fA-F-]+$"
+    commit_sha:
+      anyOf:
+        - $ref: "./common.yaml#/CommitSHA"
+        - type: "null"
+    pull_request_number:
+      type: ["integer", "null"]
+      format: int64
+    pull_request_url:
+      type: ["string", "null"]
+      format: uri
+    status:
+      $ref: "./publications.yaml#/PublicationStatus"
+    attempt_count:
+      type: integer
+      minimum: 0
+    created_at:
+      type: string
+      format: date-time

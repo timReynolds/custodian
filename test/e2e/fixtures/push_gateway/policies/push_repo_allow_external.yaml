@@ -1,0 +1,24 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: push-repo-allow-external
+  version: "1.0.0"
+  scope: REPO
+defaults:
+  effect: DENY
+  onError: DENY
+rules:
+  - id: push.repo.allow_clean_external
+    description: Explicitly permit clean non-IP pushes to a registered external destination.
+    stages: [PUSH_EGRESS]
+    when: >-
+      destination.registered &&
+      destination.external &&
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.prohibited_licenses == 0 &&
+      findings.restricted_ip_matches == 0 &&
+      findings.confidential_ip_matches == 0 &&
+      findings.concealment_findings == 0 &&
+      (assessment.status == "NOT_REQUIRED" || (assessment.status == "COMPLETE" && assessment.disposition == "CLEAR"))
+    effect: ALLOW
