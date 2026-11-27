@@ -9,8 +9,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1718,6 +1721,9 @@ func TestHarness_SnapshotStoreHelper(t *testing.T) {
 }
 
 func TestHarness_PGDocker(t *testing.T) {
+	if testing.Short() && os.Getenv("CUSTODIAN_TEST_FORCE_DOCKER") != "1" {
+		t.Skip("skipping PGDocker under -short (set CUSTODIAN_TEST_FORCE_DOCKER=1 to override)")
+	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
 		t.Skipf("docker daemon unavailable: %v", err)
 	}
@@ -1916,5 +1922,804 @@ func TestHarness_MockGitHubPRs(t *testing.T) {
 
 	if gh.PRCount("acme/service") != 1 {
 		t.Fatalf("expected 1 PR, got %d", gh.PRCount("acme/service"))
+	}
+}
+
+func sshKeygenFingerprint(t *testing.T, pubKeyPath string) string {
+	t.Helper()
+	out, err := exec.Command("ssh-keygen", "-lf", pubKeyPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh-keygen -lf %s failed: %v\n%s", pubKeyPath, err, string(out))
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) < 2 {
+		t.Fatalf("unexpected ssh-keygen -lf output: %q", string(out))
+	}
+	return fields[1]
+}
+
+func inspectSSHCert(t *testing.T, certPath string) string {
+	t.Helper()
+	out, err := exec.Command("ssh-keygen", "-L", "-f", certPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh-keygen -L -f %s failed: %v\n%s", certPath, err, string(out))
+	}
+	return string(out)
+}
+
+func TestHarness_SSHCAHelper(t *testing.T) {
+	env := harness.NewEnv(t, harness.WithSkipServices(), harness.WithSkipPostgres())
+	ca := env.SSHCA()
+
+	hostPub, err := ca.HostPubKey()
+	if err != nil || !strings.HasPrefix(hostPub, "ssh-ed25519 ") {
+		t.Fatalf("expected valid ssh-ed25519 host public key, got %q err=%v", hostPub, err)
+	}
+	userCAPub, err := ca.UserCAPubKey()
+	if err != nil || !strings.HasPrefix(userCAPub, "ssh-ed25519 ") {
+		t.Fatalf("expected valid ssh-ed25519 user CA public key, got %q err=%v", userCAPub, err)
+	}
+
+	userCAFP := sshKeygenFingerprint(t, ca.UserCAPubKeyPath())
+	rogueCAFP := sshKeygenFingerprint(t, ca.RogueCAPubKeyPath())
+	if userCAFP == rogueCAFP {
+		t.Fatalf("expected distinct User CA and Rogue CA fingerprints (%s)", userCAFP)
+	}
+
+	// 1. Valid user cert + GitSSHCommand + known_hosts
+	validCred := ca.MintValidCert("alice-key", []string{"alice@example.com", "alice"})
+	if validCred.Principal != "alice@example.com" || len(validCred.Principals) != 2 {
+		t.Fatalf("unexpected credential principals: %+v", validCred)
+	}
+	validInfo := inspectSSHCert(t, validCred.CertPath)
+	for _, want := range []string{
+		"ssh-ed25519-cert-v01@openssh.com user certificate",
+		"Key ID: \"alice-key\"",
+		"alice@example.com",
+		userCAFP,
+	} {
+		if !strings.Contains(validInfo, want) {
+			t.Fatalf("valid cert output missing %q:\n%s", want, validInfo)
+		}
+	}
+
+	sshCmd := validCred.GitSSHCommand(2222)
+	for _, want := range []string{
+		"-p 2222",
+		`CertificateFile="`,
+		"-o IdentitiesOnly=yes",
+		"-o StrictHostKeyChecking=yes",
+		`UserKnownHostsFile="`,
+		"-o BatchMode=yes",
+	} {
+		if !strings.Contains(sshCmd, want) {
+			t.Fatalf("GitSSHCommand missing %q: %s", want, sshCmd)
+		}
+	}
+	khPath, err := ca.WriteKnownHosts("127.0.0.1:2222")
+	if err != nil {
+		t.Fatalf("WriteKnownHosts: %v", err)
+	}
+	khBytes, err := os.ReadFile(khPath)
+	if err != nil {
+		t.Fatalf("read known_hosts: %v", err)
+	}
+	if !strings.Contains(string(khBytes), "[127.0.0.1]:2222 "+hostPub) || !strings.Contains(string(khBytes), "[localhost]:2222 "+hostPub) {
+		t.Fatalf("known_hosts missing pinned host entries:\n%s", string(khBytes))
+	}
+
+	// 1b. Space-containing rootDir must parse cleanly under real OpenSSH (-o quoting regression).
+	spacedCA := harness.NewSSHCAHelper(t, harness.WithSSHRootDir(filepath.Join(t.TempDir(), "dir with spaces")))
+	spacedCred := spacedCA.MintValidCert("alice-spaced", []string{"alice@example.com"})
+	spacedKH, err := spacedCA.WriteKnownHosts("127.0.0.1:2222")
+	if err != nil {
+		t.Fatalf("spaced WriteKnownHosts: %v", err)
+	}
+	spacedCmd := spacedCred.GitSSHCommand(2222)
+	if !strings.HasPrefix(spacedCmd, "ssh ") {
+		t.Fatalf("unexpected spaced GitSSHCommand prefix: %q", spacedCmd)
+	}
+	sshGCheck := strings.Replace(spacedCmd, "ssh ", "ssh -G ", 1) + " 127.0.0.1"
+	sshOut, sshErr := exec.Command("/bin/sh", "-c", sshGCheck).CombinedOutput()
+	if sshErr != nil {
+		t.Fatalf("ssh -G with spaces in rootDir failed: %v\ncmd: %s\nout: %s", sshErr, sshGCheck, string(sshOut))
+	}
+	if strings.Contains(string(sshOut), "extra arguments at end of line") {
+		t.Fatalf("OpenSSH rejected -o quoting with spaces:\n%s", string(sshOut))
+	}
+	if !strings.Contains(string(sshOut), "certificatefile "+spacedCred.CertPath) || !strings.Contains(string(sshOut), "userknownhostsfile "+spacedKH) {
+		t.Fatalf("ssh -G output did not preserve spaced CertificateFile/UserKnownHostsFile:\n%s", string(sshOut))
+	}
+
+	// 2. Expired cert
+	expCred := ca.MintExpiredCert("alice-expired", []string{"alice@example.com"})
+	expInfo := inspectSSHCert(t, expCred.CertPath)
+	if !strings.Contains(expInfo, "Valid: from ") {
+		t.Fatalf("expected Valid window in expired cert output:\n%s", expInfo)
+	}
+
+	// 3. Wrong CA (Rogue CA)
+	rogueCred := ca.MintWrongCACert("alice-rogue", []string{"alice@example.com"})
+	rogueInfo := inspectSSHCert(t, rogueCred.CertPath)
+	if !strings.Contains(rogueInfo, rogueCAFP) || strings.Contains(rogueInfo, userCAFP) {
+		t.Fatalf("expected Rogue CA fingerprint %s (not %s):\n%s", rogueCAFP, userCAFP, rogueInfo)
+	}
+
+	// 4. Wrong principal
+	wrongPrinCred := ca.MintWrongPrincipalCert("mallory-key", []string{"mallory@example.com"})
+	wrongPrinInfo := inspectSSHCert(t, wrongPrinCred.CertPath)
+	if !strings.Contains(wrongPrinInfo, "mallory@example.com") || strings.Contains(wrongPrinInfo, "alice@example.com") {
+		t.Fatalf("expected mallory principal only:\n%s", wrongPrinInfo)
+	}
+
+	// 5. Private keys are recorded as secrets and caught by FindSecretLeaks
+	secrets := ca.Secrets()
+	if len(secrets) < 7 {
+		t.Fatalf("expected >= 7 recorded SSH private keys (host + 2 CAs + 4 users), got %d", len(secrets))
+	}
+	userKeyBytes, err := os.ReadFile(validCred.PrivateKeyPath)
+	if err != nil {
+		t.Fatalf("read user private key: %v", err)
+	}
+	if leaks := harness.FindSecretLeaks("log line: "+string(userKeyBytes), secrets...); len(leaks) == 0 {
+		t.Fatalf("expected FindSecretLeaks to detect leaked SSH private key")
+	}
+	if leaks := harness.FindSecretOrEncodedLeaks("path="+url.PathEscape(string(userKeyBytes)), string(userKeyBytes)); len(leaks) == 0 {
+		t.Fatalf("expected FindSecretOrEncodedLeaks to detect url.PathEscape-encoded SSH private key")
+	}
+	env.AssertNoSecretLeakInLogs()
+}
+
+func TestHarness_EphemeralTLS(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tls")
+	bundle, err := harness.GenerateEphemeralGatewayTLS(dir)
+	if err != nil {
+		t.Fatalf("GenerateEphemeralGatewayTLS: %v", err)
+	}
+	if bundle.CertPool == nil || bundle.ServerKeyPEM == "" || bundle.CAKeyPEM == "" {
+		t.Fatalf("expected populated EphemeralTLSBundle")
+	}
+
+	caBlock, _ := pem.Decode([]byte(bundle.CACertPEM))
+	if caBlock == nil {
+		t.Fatalf("decode CA PEM failed")
+	}
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil || !caCert.IsCA || !caCert.BasicConstraintsValid {
+		t.Fatalf("invalid CA cert: isCA=%v basic=%v err=%v", caCert.IsCA, caCert.BasicConstraintsValid, err)
+	}
+
+	srvBlock, _ := pem.Decode([]byte(bundle.ServerCertPEM))
+	if srvBlock == nil {
+		t.Fatalf("decode server leaf PEM failed")
+	}
+	srvCert, err := x509.ParseCertificate(srvBlock.Bytes)
+	if err != nil {
+		t.Fatalf("parse server leaf cert: %v", err)
+	}
+	if _, err := srvCert.Verify(x509.VerifyOptions{Roots: bundle.CertPool, DNSName: "localhost"}); err != nil {
+		t.Fatalf("verify server cert for localhost failed: %v", err)
+	}
+	if _, err := srvCert.Verify(x509.VerifyOptions{Roots: bundle.CertPool, DNSName: "127.0.0.1"}); err != nil {
+		t.Fatalf("verify server cert for 127.0.0.1 failed: %v", err)
+	}
+
+	kp, err := tls.LoadX509KeyPair(bundle.ServerCertPath, bundle.ServerKeyPath)
+	if err != nil {
+		t.Fatalf("LoadX509KeyPair: %v", err)
+	}
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "tls-ok")
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{kp},
+		MinVersion:   tls.VersionTLS12,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	// Trusted client succeeds
+	trustedClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: bundle.CertPool, MinVersion: tls.VersionTLS12},
+		},
+	}
+	resp, err := trustedClient.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("trusted TLS GET failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "tls-ok" {
+		t.Fatalf("unexpected TLS response: status=%d body=%q", resp.StatusCode, string(body))
+	}
+
+	// Untrusted default client fails certificate verification
+	untrustedClient := &http.Client{Timeout: 2 * time.Second}
+	if resp2, err2 := untrustedClient.Get(srv.URL); err2 == nil {
+		resp2.Body.Close()
+		t.Fatalf("expected untrusted HTTP client to fail TLS verification against ephemeral CA")
+	}
+
+	// Pre-existing permissive server.key must be tightened to 0600 on regeneration
+	preExistDir := filepath.Join(t.TempDir(), "tls-preexist")
+	if err := os.MkdirAll(preExistDir, 0o755); err != nil {
+		t.Fatalf("mkdir preExistDir: %v", err)
+	}
+	preKey := filepath.Join(preExistDir, "server.key")
+	if err := os.WriteFile(preKey, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seed stale server.key: %v", err)
+	}
+	if _, err := harness.GenerateEphemeralGatewayTLS(preExistDir); err != nil {
+		t.Fatalf("GenerateEphemeralGatewayTLS on pre-existing key: %v", err)
+	}
+	if info, err := os.Stat(preKey); err != nil {
+		t.Fatalf("stat server.key: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected server.key mode 0600 after regeneration, got %04o", info.Mode().Perm())
+	}
+}
+
+func TestHarness_MockGitHubPacketCountersAndLFS(t *testing.T) {
+	git := harness.NewBareGitHelper(t, "")
+	_, err := git.InitSeededRepo("acme", "service", map[string]string{"README.md": "# seed\n"})
+	if err != nil {
+		t.Fatalf("InitSeededRepo: %v", err)
+	}
+	gh := harness.StartMockGitHub(t, git, 101, 202)
+	gh.RegisterUserToken("gho_alice_write", true)
+	gh.RegisterUserToken("gho_bob_read", false)
+	gh.ResetPacketCounters()
+
+	// 1. Clone exercises /info/refs and /git-upload-pack
+	work := filepath.Join(t.TempDir(), "clone")
+	cloneCmd := exec.Command("git", "-c", "core.hooksPath=/dev/null", "clone", gh.CloneURL("acme/service"), work)
+	cloneCmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone failed: %v\n%s", err, string(out))
+	}
+	if len(gh.InfoRefsCalls()) == 0 || len(gh.UploadPackCalls()) == 0 {
+		t.Fatalf("expected InfoRefsCalls (%d) and UploadPackCalls (%d) > 0 after clone", len(gh.InfoRefsCalls()), len(gh.UploadPackCalls()))
+	}
+
+	// 2. Direct POST /git-receive-pack without auth (401) and with read-only token (403) still counts raw bytes
+	probeBody := []byte("0000")
+	req401, _ := http.NewRequest(http.MethodPost, gh.CloneURL("acme/service")+"/git-receive-pack", bytes.NewReader(probeBody))
+	resp401, err := http.DefaultClient.Do(req401)
+	if err != nil || resp401.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on unauth receive-pack, got err=%v resp=%v", err, resp401)
+	}
+	resp401.Body.Close()
+
+	req403, _ := http.NewRequest(http.MethodPost, gh.CloneURL("acme/service")+"/git-receive-pack", bytes.NewReader(probeBody))
+	req403.Header.Set("Authorization", "Bearer gho_bob_read")
+	resp403, err := http.DefaultClient.Do(req403)
+	if err != nil || resp403.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 on read-only receive-pack, got err=%v resp=%v", err, resp403)
+	}
+	resp403.Body.Close()
+
+	if len(gh.ReceivePackCalls()) != 2 || gh.ReceivePackBytes("acme/service") != int64(2*len(probeBody)) {
+		t.Fatalf("expected 2 receive-pack calls and %d bytes, got calls=%+v bytes=%d",
+			2*len(probeBody), gh.ReceivePackCalls(), gh.ReceivePackBytes("acme/service"))
+	}
+
+	// 3. Real git push with registered write token gho_alice_write
+	if err := os.WriteFile(filepath.Join(work, "feature.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.name", "Alice"},
+		{"config", "user.email", "alice@example.com"},
+		{"add", "feature.txt"},
+		{"commit", "-m", "add feature"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = work
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+		}
+	}
+	pushURL := strings.Replace(gh.CloneURL("acme/service"), "http://", "http://x-access-token:gho_alice_write@", 1)
+	pushCmd := exec.Command("git", "push", pushURL, "HEAD:refs/heads/main")
+	pushCmd.Dir = work
+	pushCmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	if out, err := pushCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git push with registered write token failed: %v\n%s", err, string(out))
+	}
+	if len(gh.ReceivePackCalls()) < 3 || gh.ReceivePackBytes("acme/service") <= int64(2*len(probeBody)) {
+		t.Fatalf("expected receive-pack counter and bytes to increase after git push")
+	}
+
+	// 4. LFS batch & object upload/download endpoints
+	lfsPayload := []byte("large-model-weights-mock-payload")
+	sum := sha256.Sum256(lfsPayload)
+	oid := hex.EncodeToString(sum[:])
+	batchReq := fmt.Sprintf(`{"operation":"upload","transfers":["basic"],"objects":[{"oid":%q,"size":%d}]}`, oid, len(lfsPayload))
+
+	batchURL := gh.CloneURL("acme/service") + "/info/lfs/objects/batch"
+	respUnauth, err := http.Post(batchURL, "application/vnd.git-lfs+json", strings.NewReader(batchReq))
+	if err != nil || respUnauth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on unauth LFS batch upload, got %v %v", err, respUnauth)
+	}
+	respUnauth.Body.Close()
+
+	reqRead, _ := http.NewRequest(http.MethodPost, batchURL, strings.NewReader(batchReq))
+	reqRead.Header.Set("Authorization", "Bearer gho_bob_read")
+	respRead, err := http.DefaultClient.Do(reqRead)
+	if err != nil || respRead.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 on read-token LFS batch upload, got %v %v", err, respRead)
+	}
+	respRead.Body.Close()
+
+	reqWrite, _ := http.NewRequest(http.MethodPost, batchURL, strings.NewReader(batchReq))
+	reqWrite.Header.Set("Authorization", "Bearer gho_alice_write")
+	respWrite, err := http.DefaultClient.Do(reqWrite)
+	if err != nil || respWrite.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on write-token LFS batch upload, got %v %v", err, respWrite)
+	}
+	var batchResp struct {
+		Objects []struct {
+			OID     string `json:"oid"`
+			Actions map[string]struct {
+				Href string `json:"href"`
+			} `json:"actions"`
+		} `json:"objects"`
+	}
+	if err := json.NewDecoder(respWrite.Body).Decode(&batchResp); err != nil {
+		respWrite.Body.Close()
+		t.Fatalf("decode LFS batch response: %v", err)
+	}
+	respWrite.Body.Close()
+	if len(batchResp.Objects) != 1 || batchResp.Objects[0].Actions["upload"].Href == "" {
+		t.Fatalf("expected upload action href, got %+v", batchResp)
+	}
+
+	putReq, _ := http.NewRequest(http.MethodPut, batchResp.Objects[0].Actions["upload"].Href, bytes.NewReader(lfsPayload))
+	putReq.Header.Set("Authorization", "Bearer gho_alice_write")
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil || putResp.StatusCode != http.StatusOK {
+		t.Fatalf("LFS PUT failed: %v %v", err, putResp)
+	}
+	putResp.Body.Close()
+	if gh.LFSUploadBytes("acme/service") != int64(len(lfsPayload)) {
+		t.Fatalf("expected LFSUploadBytes=%d, got %d", len(lfsPayload), gh.LFSUploadBytes("acme/service"))
+	}
+
+	// Download batch with unknown + known OID
+	unknownOID := strings.Repeat("0", 64)
+	dlBatch := fmt.Sprintf(`{"operation":"download","transfers":["basic"],"objects":[{"oid":%q,"size":%d},{"oid":%q,"size":10}]}`, oid, len(lfsPayload), unknownOID)
+	dlReq, _ := http.NewRequest(http.MethodPost, batchURL, strings.NewReader(dlBatch))
+	dlReq.Header.Set("Authorization", "Bearer gho_bob_read")
+	dlResp, err := http.DefaultClient.Do(dlReq)
+	if err != nil || dlResp.StatusCode != http.StatusOK {
+		t.Fatalf("LFS download batch failed: %v %v", err, dlResp)
+	}
+	var dlParsed struct {
+		Objects []struct {
+			OID     string `json:"oid"`
+			Actions map[string]struct {
+				Href string `json:"href"`
+			} `json:"actions"`
+			Error *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		} `json:"objects"`
+	}
+	if err := json.NewDecoder(dlResp.Body).Decode(&dlParsed); err != nil {
+		dlResp.Body.Close()
+		t.Fatalf("decode LFS download batch: %v", err)
+	}
+	dlResp.Body.Close()
+	if len(dlParsed.Objects) != 2 || dlParsed.Objects[0].Actions["download"].Href == "" || dlParsed.Objects[1].Error == nil || dlParsed.Objects[1].Error.Code != 404 {
+		t.Fatalf("unexpected LFS download batch objects: %+v", dlParsed)
+	}
+
+	getReq, _ := http.NewRequest(http.MethodGet, dlParsed.Objects[0].Actions["download"].Href, nil)
+	getReq.Header.Set("Authorization", "Bearer gho_bob_read")
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil || getResp.StatusCode != http.StatusOK {
+		t.Fatalf("LFS GET failed: %v %v", err, getResp)
+	}
+	gotLFS, _ := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	if !bytes.Equal(gotLFS, lfsPayload) {
+		t.Fatalf("LFS GET bytes mismatch: got %q want %q", string(gotLFS), string(lfsPayload))
+	}
+
+	// 5. ResetPacketCounters clears counters and PushAttempts while preserving registered tokens & stored LFS objects
+	if len(gh.PushAttempts()) == 0 {
+		t.Fatalf("expected non-zero PushAttempts before ResetPacketCounters")
+	}
+	gh.ResetPacketCounters()
+	if len(gh.PushAttempts()) != 0 || len(gh.ReceivePackCalls()) != 0 || gh.ReceivePackBytes("") != 0 || len(gh.UploadPackCalls()) != 0 || len(gh.InfoRefsCalls()) != 0 || len(gh.LFSBatchCalls()) != 0 || gh.LFSUploadBytes("") != 0 {
+		t.Fatalf("expected all packet counters and PushAttempts reset to zero")
+	}
+	getReq2, _ := http.NewRequest(http.MethodGet, dlParsed.Objects[0].Actions["download"].Href, nil)
+	getReq2.Header.Set("Authorization", "Bearer gho_bob_read")
+	getResp2, err := http.DefaultClient.Do(getReq2)
+	if err != nil || getResp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected stored LFS object to persist after ResetPacketCounters: %v %v", err, getResp2)
+	}
+	getResp2.Body.Close()
+
+	// 6. Reject oid == "." and normalize 64-hex OID case across PUT and GET
+	dotReq, _ := http.NewRequest(http.MethodPut, gh.CloneURL("acme/service")+"/info/lfs/objects/.", bytes.NewReader([]byte("x")))
+	dotReq.Header.Set("Authorization", "Bearer gho_alice_write")
+	dotResp, err := http.DefaultClient.Do(dotReq)
+	if err != nil || dotResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for LFS oid '.', got err=%v resp=%v", err, dotResp)
+	}
+	dotResp.Body.Close()
+
+	casePayload := []byte("case-normalized-lfs-object")
+	caseSum := sha256.Sum256(casePayload)
+	caseLower := hex.EncodeToString(caseSum[:])
+	caseUpper := strings.ToUpper(caseLower)
+	upperPutReq, _ := http.NewRequest(http.MethodPut, gh.CloneURL("acme/service")+"/info/lfs/objects/"+caseUpper, bytes.NewReader(casePayload))
+	upperPutReq.Header.Set("Authorization", "Bearer gho_alice_write")
+	upperPutResp, err := http.DefaultClient.Do(upperPutReq)
+	if err != nil || upperPutResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on uppercase LFS OID PUT, got err=%v resp=%v", err, upperPutResp)
+	}
+	upperPutResp.Body.Close()
+
+	lowerGetReq, _ := http.NewRequest(http.MethodGet, gh.CloneURL("acme/service")+"/info/lfs/objects/"+caseLower, nil)
+	lowerGetReq.Header.Set("Authorization", "Bearer gho_bob_read")
+	lowerGetResp, err := http.DefaultClient.Do(lowerGetReq)
+	if err != nil || lowerGetResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on lowercase LFS OID GET after uppercase PUT, got err=%v resp=%v", err, lowerGetResp)
+	}
+	gotCaseBytes, _ := io.ReadAll(lowerGetResp.Body)
+	lowerGetResp.Body.Close()
+	if !bytes.Equal(gotCaseBytes, casePayload) {
+		t.Fatalf("LFS case-normalized GET mismatch: got %q want %q", string(gotCaseBytes), string(casePayload))
+	}
+}
+
+func TestHarness_RunBinaryWithStdin(t *testing.T) {
+	binDir := t.TempDir()
+	scriptPath := filepath.Join(binDir, "custodian")
+	script := "#!/bin/sh\n" +
+		"echo \"ARGS:$*\"\n" +
+		"echo \"ENV:${TEST_VAR:-}\"\n" +
+		"printf 'STDIN:'\n" +
+		"cat\n" +
+		"echo \"err-msg\" >&2\n" +
+		"exit \"${EXIT_CODE:-0}\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write probe script: %v", err)
+	}
+
+	res := harness.RunBinaryWithStdin(
+		context.Background(),
+		scriptPath,
+		binDir,
+		[]string{"credential-helper", "get"},
+		map[string]string{"TEST_VAR": "ok", "EXIT_CODE": "0"},
+		strings.NewReader("protocol=https\nhost=gw.local\n"),
+	)
+	if res.ExitCode != 0 {
+		t.Fatalf("expected exit 0, got %d (stderr=%q err=%v)", res.ExitCode, res.Stderr, res.Err)
+	}
+	wantOut := "ARGS:credential-helper get\nENV:ok\nSTDIN:protocol=https\nhost=gw.local\n"
+	if res.Stdout != wantOut {
+		t.Fatalf("unexpected stdout:\ngot:  %q\nwant: %q", res.Stdout, wantOut)
+	}
+
+	resErr := harness.RunBinaryWithStdin(
+		context.Background(),
+		scriptPath,
+		binDir,
+		[]string{"probe"},
+		map[string]string{"EXIT_CODE": "7"},
+		nil,
+	)
+	if resErr.ExitCode != 7 || resErr.Stderr != "err-msg\n" {
+		t.Fatalf("expected exit 7 and stderr 'err-msg\\n', got code=%d stderr=%q", resErr.ExitCode, resErr.Stderr)
+	}
+
+	env := harness.NewEnv(t, harness.WithSkipServices(), harness.WithSkipPostgres(), harness.WithBinDir(binDir))
+	if gotBin := env.BinaryPath("custodian"); gotBin != scriptPath {
+		t.Fatalf("expected BinaryPath('custodian')=%q, got %q", scriptPath, gotBin)
+	}
+	cliRes := env.RunCLIWithStdin("custodian", []string{"credential-helper", "get"}, map[string]string{"TEST_VAR": "cli-ok"}, "host=127.0.0.1\n")
+	if cliRes.ExitCode != 0 || !strings.Contains(cliRes.Stdout, "STDIN:host=127.0.0.1") || !strings.Contains(cliRes.Stdout, "ENV:cli-ok") {
+		t.Fatalf("RunCLIWithStdin unexpected result: %+v", cliRes)
+	}
+
+	// Regression: descendant holding stdout/stderr must not hang RunBinaryWithStdin past ctx deadline.
+	hangScript := filepath.Join(binDir, "hang-child")
+	if err := os.WriteFile(hangScript, []byte("#!/bin/sh\nsleep 5 &\nsleep 5\n"), 0o755); err != nil {
+		t.Fatalf("write hang-child script: %v", err)
+	}
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	hangRes := harness.RunBinaryWithStdin(timeoutCtx, hangScript, binDir, nil, nil, nil)
+	if hangRes.Err == nil || hangRes.ExitCode != -1 {
+		t.Fatalf("expected timeout error and ExitCode=-1, got %+v", hangRes)
+	}
+	if hangRes.Duration >= 2*time.Second {
+		t.Fatalf("RunBinaryWithStdin hung past ctx timeout with background child: duration=%s", hangRes.Duration)
+	}
+}
+
+func TestHarness_ContractsPushGateway(t *testing.T) {
+	c := harness.DefaultContracts()
+	if c.Binaries.GitGateway != "custodian-git-gateway" {
+		t.Fatalf("expected GitGateway binary name 'custodian-git-gateway', got %q", c.Binaries.GitGateway)
+	}
+	if len(c.CLI.CredentialHelperSubcommand) == 0 || c.CLI.CredentialHelperSubcommand[0] != "credential-helper" {
+		t.Fatalf("unexpected CredentialHelperSubcommand: %+v", c.CLI.CredentialHelperSubcommand)
+	}
+	if len(c.CLI.PushSubcommand) == 0 || len(c.CLI.PushStatusSubcommand) < 2 {
+		t.Fatalf("unexpected Push CLI subcommands: push=%+v status=%+v", c.CLI.PushSubcommand, c.CLI.PushStatusSubcommand)
+	}
+	for _, field := range []string{
+		c.EnvGitGatewayHTTPAddr,
+		c.EnvGitGatewaySSHAddr,
+		c.EnvGitGatewayTLSCertFile,
+		c.EnvGitGatewayTLSKeyFile,
+		c.EnvGitGatewaySSHHostKeyFile,
+		c.EnvGitGatewaySSHUserCAFile,
+		c.EnvGitGatewayUpstreamURL,
+		c.EnvGitGatewayAPIBaseURL,
+		c.EnvGitGatewayMaxPackBytes,
+		c.EnvGitGatewayMaxObjects,
+		c.EnvGitGatewayMaxInflatedBytes,
+		c.EnvGitGatewayMaxRefUpdates,
+		c.EnvGitGatewayDefaultEgressMode,
+		c.EnvGitGatewayPassiveDelivery,
+		c.PushEndpoints.PushesPath,
+		c.PushEndpoints.PushByIDPath,
+		c.PushEndpoints.PushApprovalsPath,
+		c.PushEndpoints.RepoEgressModePath,
+		c.PushEndpoints.IPCorporaPath,
+		c.PushEndpoints.IPCorpusReindexPath,
+		c.PushStatuses.Pending,
+		c.PushStatuses.Ready,
+	} {
+		if field == "" {
+			t.Fatalf("expected all Push Gateway contract defaults to be non-empty")
+		}
+	}
+
+	cloned := c.Clone()
+	cloned.Binaries.GitGateway = "custom-gw"
+	if c.Binaries.GitGateway != "custodian-git-gateway" {
+		t.Fatalf("Clone mutated original Contracts")
+	}
+
+	overlayPath := filepath.Join(t.TempDir(), "contracts.json")
+	overlay := `{"binaries":{"git_gateway":"overlay-gw"},"cli":{"credential_helper_subcommand":["cred-helper"]},"push_endpoints":{"pushes_path":"/custom-pushes"}}`
+	if err := os.WriteFile(overlayPath, []byte(overlay), 0o644); err != nil {
+		t.Fatalf("write overlay contracts: %v", err)
+	}
+	t.Setenv("CUSTODIAN_E2E_CONTRACTS", overlayPath)
+	loaded, err := harness.LoadContracts("")
+	if err != nil {
+		t.Fatalf("LoadContracts: %v", err)
+	}
+	if loaded.Binaries.GitGateway != "overlay-gw" || loaded.CLI.CredentialHelperSubcommand[0] != "cred-helper" || loaded.PushEndpoints.PushesPath != "/custom-pushes" {
+		t.Fatalf("overlay values did not apply: %+v", loaded)
+	}
+	if loaded.Binaries.API != "custodian-api" {
+		t.Fatalf("expected non-overridden defaults preserved, got API=%q", loaded.Binaries.API)
+	}
+}
+
+func TestHarness_APIClientPushGateway(t *testing.T) {
+	pushID := harness.NewTestUUIDv7()
+	repoID := harness.NewTestUUIDv7()
+	corpusID := harness.NewTestUUIDv7()
+	relID := harness.NewTestUUIDv7()
+	digest := strings.Repeat("a", 64)
+
+	type recordedReq struct {
+		Method string
+		Path   string
+		Query  string
+		Auth   string
+		Idem   string
+		Body   string
+	}
+	var seen []recordedReq
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		seen = append(seen, recordedReq{
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Query:  r.URL.RawQuery,
+			Auth:   r.Header.Get("Authorization"),
+			Idem:   r.Header.Get("Idempotency-Key"),
+			Body:   string(bodyBytes),
+		})
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/pushes":
+			_ = json.NewEncoder(w).Encode(harness.PushListResp{
+				Pushes: []harness.PushSessionResp{{
+					ID:                 pushID,
+					RepositoryID:       repoID,
+					Destination:        "acme/service",
+					EgressMode:         "ENFORCE_BLOCK",
+					Status:             "QUARANTINED",
+					PushManifestDigest: digest,
+				}},
+				HasMore: false,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/pushes/"+pushID:
+			_ = json.NewEncoder(w).Encode(harness.PushSessionResp{
+				ID:                    pushID,
+				RepositoryID:          repoID,
+				PrincipalSubject:      "alice@example.com",
+				Destination:           "acme/service",
+				DestinationRegistered: true,
+				EgressMode:            "ENFORCE_BLOCK",
+				Status:                "ALLOWED",
+				PushManifestDigest:    digest,
+				HasLFS:                true,
+				UpstreamForwarded:     true,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/pushes/"+pushID+"/approvals":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(harness.PushApprovalReleaseResp{
+				ID:                 relID,
+				PushSessionID:      pushID,
+				PushManifestDigest: digest,
+				Decision:           "APPROVE",
+				SingleUse:          true,
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/repositories/"+repoID+"/egress-mode":
+			_ = json.NewEncoder(w).Encode(harness.RepoEgressModeResp{
+				RepositoryID:         repoID,
+				EgressMode:           "PASSIVE_AUDIT",
+				PassiveAuditDelivery: "INLINE_WARN",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/ip-corpora":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(harness.IPCorpusResp{
+				ID:               corpusID,
+				Name:             "core-ip",
+				Classification:   "RESTRICTED",
+				FingerprintCount: 42,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/ip-corpora":
+			_ = json.NewEncoder(w).Encode(harness.IPCorporaListResp{
+				Corpora: []harness.IPCorpusResp{{
+					ID:               corpusID,
+					Name:             "core-ip",
+					Classification:   "RESTRICTED",
+					FingerprintCount: 42,
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/ip-corpora/"+corpusID+"/reindex":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(harness.ReindexIPCorpusResp{
+				CorpusID:            corpusID,
+				Status:              "COMPLETED",
+				FingerprintsIndexed: 42,
+				FilesProcessed:      2,
+			})
+		default:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"code":"DIGEST_MISMATCH","message":"approval digest mismatch","trace_id":"tr-1"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := harness.NewAPIClient(srv.URL, "tok-admin", harness.DefaultContracts())
+	ctx := context.Background()
+
+	listResp, raw, err := client.ListPushes(ctx, harness.PushFilter{RepositoryID: repoID, Status: "QUARANTINED", Limit: 25})
+	if err != nil {
+		t.Fatalf("ListPushes: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusOK)
+	if len(listResp.Pushes) != 1 || listResp.Pushes[0].ID != pushID {
+		t.Fatalf("unexpected ListPushes resp: %+v", listResp)
+	}
+
+	getResp, raw, err := client.GetPush(ctx, pushID)
+	if err != nil {
+		t.Fatalf("GetPush: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusOK)
+	if !getResp.HasLFS || !getResp.UpstreamForwarded || getResp.PrincipalSubject != "alice@example.com" {
+		t.Fatalf("unexpected GetPush resp: %+v", getResp)
+	}
+
+	appResp, raw, err := client.ApprovePush(ctx, pushID, harness.ApprovePushReq{
+		Decision:           "APPROVE",
+		PushManifestDigest: digest,
+		TTLSeconds:         600,
+	})
+	if err != nil {
+		t.Fatalf("ApprovePush: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusCreated)
+	if appResp.ID != relID || !appResp.SingleUse {
+		t.Fatalf("unexpected ApprovePush resp: %+v", appResp)
+	}
+
+	modeResp, raw, err := client.SetRepoEgressMode(ctx, repoID, harness.SetRepoEgressModeReq{
+		EgressMode:           "PASSIVE_AUDIT",
+		PassiveAuditDelivery: "INLINE_WARN",
+	})
+	if err != nil {
+		t.Fatalf("SetRepoEgressMode: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusOK)
+	if modeResp.EgressMode != "PASSIVE_AUDIT" || modeResp.PassiveAuditDelivery != "INLINE_WARN" {
+		t.Fatalf("unexpected SetRepoEgressMode resp: %+v", modeResp)
+	}
+
+	corpResp, raw, err := client.CreateIPCorpus(ctx, harness.CreateIPCorpusReq{
+		Name:           "core-ip",
+		Classification: "RESTRICTED",
+		Files:          []harness.IPCorpusFileInput{{Path: "engine.go", Content: "package engine"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateIPCorpus: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusCreated)
+	if corpResp.ID != corpusID || corpResp.FingerprintCount != 42 {
+		t.Fatalf("unexpected CreateIPCorpus resp: %+v", corpResp)
+	}
+
+	corporaList, raw, err := client.ListIPCorpora(ctx, harness.IPCorpusFilter{Classification: "RESTRICTED", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListIPCorpora: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusOK)
+	if len(corporaList.Corpora) != 1 || corporaList.Corpora[0].ID != corpusID {
+		t.Fatalf("unexpected ListIPCorpora resp: %+v", corporaList)
+	}
+
+	reindexResp, raw, err := client.ReindexIPCorpus(ctx, corpusID, harness.ReindexIPCorpusReq{Force: true})
+	if err != nil {
+		t.Fatalf("ReindexIPCorpus: %v", err)
+	}
+	raw.RequireStatus(t, http.StatusAccepted)
+	if reindexResp.CorpusID != corpusID || reindexResp.FingerprintsIndexed != 42 {
+		t.Fatalf("unexpected ReindexIPCorpus resp: %+v", reindexResp)
+	}
+
+	// Verify APIError decoding on 409
+	_, errRaw, err := client.GetPush(ctx, "missing-push")
+	if err != nil {
+		t.Fatalf("expected nil transport error on 409, got %v", err)
+	}
+	errRaw.RequireStatus(t, http.StatusConflict)
+	if errRaw.Error == nil || errRaw.Error.Code != "DIGEST_MISMATCH" || errRaw.Error.TraceID != "tr-1" {
+		t.Fatalf("expected decoded APIError, got %+v", errRaw.Error)
+	}
+
+	// Verify Authorization, Idempotency-Key on mutating requests, query params, and zero null literals
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 8 {
+		t.Fatalf("expected 8 recorded requests, got %d", len(seen))
+	}
+	if !strings.Contains(seen[0].Query, "repository_id="+repoID) || !strings.Contains(seen[0].Query, "status=QUARANTINED") || !strings.Contains(seen[0].Query, "limit=25") {
+		t.Fatalf("unexpected ListPushes query: %q", seen[0].Query)
+	}
+	for i, r := range seen {
+		if r.Auth != "Bearer tok-admin" {
+			t.Fatalf("req[%d] missing Bearer auth: %q", i, r.Auth)
+		}
+		if r.Method == http.MethodPost || r.Method == http.MethodPut {
+			harness.AssertUUIDv7(t, r.Idem)
+			if strings.Contains(r.Body, ":null") {
+				t.Fatalf("req[%d] emitted explicit JSON null: %s", i, r.Body)
+			}
+		}
 	}
 }

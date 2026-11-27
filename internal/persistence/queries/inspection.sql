@@ -1,22 +1,28 @@
 -- name: CreateScanRun :one
 INSERT INTO scan_runs (
-    id, proposal_id, artifact_id, scanner, scanner_version,
+    id, proposal_id, push_session_id, artifact_id, scanner, scanner_version,
     status, coverage, started_at, completed_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10
 )
-RETURNING id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at;
+RETURNING id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at;
 
 -- name: GetScanRunByID :one
-SELECT id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+SELECT id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
 FROM scan_runs
 WHERE id = $1;
 
 -- name: ListScanRunsByProposal :many
-SELECT id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+SELECT id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
 FROM scan_runs
 WHERE proposal_id = $1
+ORDER BY started_at DESC, id DESC;
+
+-- name: ListScanRunsByPushSession :many
+SELECT id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+FROM scan_runs
+WHERE push_session_id = $1
 ORDER BY started_at DESC, id DESC;
 
 -- name: CompleteScanRun :one
@@ -27,7 +33,7 @@ SET status          = $2,
     scanner_version = COALESCE(NULLIF(sqlc.arg(scanner_version)::text, ''), scanner_version)
 WHERE id = $1
   AND status IN ('PENDING', 'RUNNING')
-RETURNING id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at;
+RETURNING id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at;
 
 -- name: CreateFinding :one
 INSERT INTO findings (
@@ -71,33 +77,54 @@ WHERE sr.proposal_id = sqlc.arg(proposal_id)::uuid
 ORDER BY f.id ASC
 LIMIT sqlc.arg(page_limit);
 
+-- name: ListFindingsByPushSession :many
+SELECT f.id, f.scan_run_id, f.evidence_id, f.scanner, f.category, f.severity, f.rule_id,
+    f.path, f.start_line, f.end_line, f.fingerprint, f.evidence_artifact_id, f.evidence_ref,
+    f.baseline, f.confidence, f.message, f.redacted, f.metadata
+FROM findings f
+JOIN scan_runs sr ON sr.id = f.scan_run_id
+WHERE sr.push_session_id = sqlc.arg(push_session_id)::uuid
+  AND (sqlc.narg(scanner)::text IS NULL OR f.scanner = sqlc.narg(scanner)::text)
+  AND (sqlc.narg(severity)::text IS NULL OR f.severity = sqlc.narg(severity)::text)
+  AND (sqlc.narg(cursor_id)::uuid IS NULL OR f.id > sqlc.narg(cursor_id)::uuid)
+ORDER BY f.id ASC
+LIMIT sqlc.arg(page_limit);
+
 -- name: CreateModelAssessment :one
 INSERT INTO model_assessments (
-    id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+    id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12,
-    $13, $14, $15
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12, $13,
+    $14, $15, $16
 )
-RETURNING id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+RETURNING id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at;
 
 -- name: GetModelAssessmentByID :one
-SELECT id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+SELECT id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 FROM model_assessments
 WHERE id = $1;
 
 -- name: ListModelAssessmentsByProposal :many
-SELECT id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+SELECT id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 FROM model_assessments
 WHERE proposal_id = $1
+ORDER BY created_at DESC, id DESC;
+
+-- name: ListModelAssessmentsByPushSession :many
+SELECT id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
+    assessment_type, status, risk, disposition, result, evidence_ids,
+    input_digest, output_digest, created_at
+FROM model_assessments
+WHERE push_session_id = $1
 ORDER BY created_at DESC, id DESC;
 
 -- name: UpdateModelAssessmentResult :one
@@ -114,7 +141,7 @@ SET status         = $2,
     input_digest   = COALESCE(NULLIF(sqlc.arg(input_digest)::text, ''), input_digest)
 WHERE id = $1
   AND status = 'PENDING'
-RETURNING id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+RETURNING id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at;
 

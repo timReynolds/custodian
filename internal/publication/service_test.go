@@ -1228,6 +1228,7 @@ func seedApprovedProposal(t *testing.T, st *memStore, fix bareRepoFixture) seede
 		ProposalID:     propID,
 		PolicyBundleID: bundleID,
 		Stage:          "EGRESS",
+		Enforced:       true,
 		InputDigest:    strings.Repeat("1", 64),
 		Effect:         domain.PolicyEffectRequireApproval,
 		CreatedAt:      now,
@@ -1556,6 +1557,7 @@ func TestFailClosedRejectionMatrix(t *testing.T) {
 				ProposalID:     ids.proposalID,
 				PolicyBundleID: st.decisions[ids.decisionID].PolicyBundleID,
 				Stage:          "EGRESS",
+				Enforced:       true,
 				InputDigest:    strings.Repeat("2", 64),
 				Effect:         domain.PolicyEffectAllow,
 				CreatedAt:      time.Now().UTC().Add(time.Minute),
@@ -2578,6 +2580,106 @@ func TestSteps1To6ContextCanceledDoesNotFailProposal(t *testing.T) {
 	prop, _ := st.GetProposalByID(context.Background(), ids.proposalID)
 	if prop.Status != domain.ProposalStatusApproved {
 		t.Fatalf("expected proposal to remain APPROVED when ctx is cancelled, got %s", prop.Status)
+	}
+}
+
+func TestPublish_RejectsUnenforcedAndNonEgressDecisions(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		enforced bool
+		stage    string
+		wantCode string
+	}{
+		{
+			name:     "unenforced_passive_audit_decision",
+			enforced: false,
+			stage:    "EGRESS",
+			wantCode: "UNENFORCED_POLICY_DECISION",
+		},
+		{
+			name:     "push_egress_stage_decision",
+			enforced: true,
+			stage:    "PUSH_EGRESS",
+			wantCode: "INVALID_POLICY_STAGE",
+		},
+		{
+			name:     "ingress_stage_decision",
+			enforced: true,
+			stage:    "INGRESS",
+			wantCode: "INVALID_POLICY_STAGE",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := setupBareRepoFixture(t, map[string]string{"guard.txt": "hello\n"})
+			st := newMemStore()
+			ids := seedApprovedProposal(t, st, fix)
+
+			dec := st.decisions[ids.decisionID]
+			dec.Effect = domain.PolicyEffectAllow
+			dec.Enforced = tc.enforced
+			dec.Stage = tc.stage
+			st.decisions[ids.decisionID] = dec
+
+			prop := st.proposals[ids.proposalID]
+			eff := domain.PolicyEffectAllow
+			prop.LatestPolicyEffect = &eff
+			st.proposals[ids.proposalID] = prop
+
+			svc := newTestPublicationService(t, st, fix, fix.bareClient)
+
+			// 1. LoadApprovedPublication rejects with ErrForbidden and zero side effects.
+			_, loadErr := svc.LoadApprovedPublication(ctx, domain.ApprovedPublication{
+				ProposalID:     ids.proposalID,
+				ManifestDigest: ids.manifestDigest,
+			})
+			if !errors.Is(loadErr, domain.ErrForbidden) {
+				t.Fatalf("LoadApprovedPublication expected ErrForbidden, got %v", loadErr)
+			}
+			var domErr *domain.DomainError
+			if !errors.As(loadErr, &domErr) || domErr.Code() != tc.wantCode {
+				t.Fatalf("LoadApprovedPublication code=%q, want %q", domErr.Code(), tc.wantCode)
+			}
+
+			// 2. RequestPublication rejects with ErrForbidden and enqueues no operation.
+			_, reqErr := svc.RequestPublication(ctx, ids.proposalID, ids.manifestDigest, &ids.ownerID)
+			if !errors.Is(reqErr, domain.ErrForbidden) {
+				t.Fatalf("RequestPublication expected ErrForbidden, got %v", reqErr)
+			}
+			if len(st.ops) != 0 {
+				t.Fatalf("expected 0 enqueued operations on rejected RequestPublication, got %d", len(st.ops))
+			}
+
+			// 3. PublishOperation rejects with ErrForbidden and creates zero git branches or PRs.
+			opID, _ := domain.NewID()
+			payloadBytes, _ := json.Marshal(publication.OperationPayload{
+				ProposalID:     ids.proposalID,
+				ManifestDigest: ids.manifestDigest,
+			})
+			_, pubErr := svc.PublishOperation(ctx, operations.OperationDetails{
+				Operation: domain.Operation{
+					ID:            opID,
+					OperationType: domain.OperationTypeProposalPublish,
+					ResourceID:    ids.proposalID,
+					Attempts:      1,
+				},
+				ResourceType: "proposal",
+				MaxAttempts:  3,
+			}, payloadBytes)
+			if !errors.Is(pubErr, domain.ErrForbidden) {
+				t.Fatalf("PublishOperation expected ErrForbidden, got %v", pubErr)
+			}
+			if prs := fix.bareClient.PullRequests(fix.repo.FullName); len(prs) != 0 {
+				t.Fatalf("expected 0 PRs on rejected PublishOperation, got %d", len(prs))
+			}
+			heads := runGitCLI(t, fix.bareDir, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+			if strings.Contains(heads, "custodian/") {
+				t.Fatalf("expected no custodian branch on rejected PublishOperation, got %s", heads)
+			}
+		})
 	}
 }
 

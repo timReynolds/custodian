@@ -37,26 +37,38 @@ func (r PrincipalRow) ToDomain() domain.Principal {
 
 // RepositoryRow represents a row in repositories.
 type RepositoryRow struct {
-	ID                      uuid.UUID             `json:"id"`
-	GitHubRepositoryID      int64                 `json:"github_repository_id"`
-	GitHubInstallationID    int64                 `json:"github_installation_id"`
-	FullName                string                `json:"full_name"`
-	Classification          domain.Classification `json:"classification"`
-	Enabled                 bool                  `json:"enabled"`
-	AllowedModelRoutes      []string              `json:"allowed_model_routes"`
-	MaxConcurrentOperations int                   `json:"max_concurrent_operations"`
-	CreatedAt               time.Time             `json:"created_at"`
+	ID                      uuid.UUID                   `json:"id"`
+	GitHubRepositoryID      int64                       `json:"github_repository_id"`
+	GitHubInstallationID    int64                       `json:"github_installation_id"`
+	FullName                string                      `json:"full_name"`
+	Classification          domain.Classification       `json:"classification"`
+	Enabled                 bool                        `json:"enabled"`
+	AllowedModelRoutes      []string                    `json:"allowed_model_routes"`
+	MaxConcurrentOperations int                         `json:"max_concurrent_operations"`
+	EgressMode              domain.EgressMode           `json:"egress_mode"`
+	PassiveAuditDelivery    domain.PassiveAuditDelivery `json:"passive_audit_delivery"`
+	GitRemoteURL            *string                     `json:"git_remote_url,omitempty"`
+	RemoteHost              string                      `json:"remote_host"`
+	RegisteredDestination   bool                        `json:"registered_destination"`
+	External                bool                        `json:"external"`
+	CreatedAt               time.Time                   `json:"created_at"`
 }
 
 // ToDomain converts RepositoryRow to domain.Repository.
 func (r RepositoryRow) ToDomain() domain.Repository {
 	return domain.Repository{
-		ID:                   r.ID,
-		GitHubRepositoryID:   r.GitHubRepositoryID,
-		GitHubInstallationID: r.GitHubInstallationID,
-		FullName:             r.FullName,
-		Classification:       r.Classification,
-		Enabled:              r.Enabled,
+		ID:                    r.ID,
+		GitHubRepositoryID:    r.GitHubRepositoryID,
+		GitHubInstallationID:  r.GitHubInstallationID,
+		FullName:              r.FullName,
+		Classification:        r.Classification,
+		Enabled:               r.Enabled,
+		EgressMode:            r.EgressMode,
+		PassiveAuditDelivery:  r.PassiveAuditDelivery,
+		GitRemoteURL:          derefString(r.GitRemoteURL),
+		RemoteHost:            r.RemoteHost,
+		RegisteredDestination: r.RegisteredDestination,
+		External:              r.External,
 	}
 }
 
@@ -322,6 +334,7 @@ type ProposalDetailsRow struct {
 type ScanRunRow struct {
 	ID             uuid.UUID         `json:"id"`
 	ProposalID     uuid.UUID         `json:"proposal_id"`
+	PushSessionID  *uuid.UUID        `json:"push_session_id,omitempty"`
 	ArtifactID     uuid.UUID         `json:"artifact_id"`
 	Scanner        string            `json:"scanner"`
 	ScannerVersion string            `json:"scanner_version"`
@@ -343,6 +356,7 @@ func (r ScanRunRow) ToDomain() domain.ScanRun {
 	return domain.ScanRun{
 		ID:             r.ID,
 		ProposalID:     r.ProposalID,
+		PushSessionID:  r.PushSessionID,
 		ArtifactID:     r.ArtifactID,
 		Scanner:        r.Scanner,
 		ScannerVersion: r.ScannerVersion,
@@ -410,6 +424,7 @@ func (r FindingRow) ToDomain() domain.Finding {
 type ModelAssessmentRow struct {
 	ID             uuid.UUID               `json:"id"`
 	ProposalID     uuid.UUID               `json:"proposal_id"`
+	PushSessionID  *uuid.UUID              `json:"push_session_id,omitempty"`
 	ArtifactID     uuid.UUID               `json:"artifact_id"`
 	ModelRoute     string                  `json:"model_route"`
 	ModelVersion   string                  `json:"model_version"`
@@ -463,6 +478,7 @@ func (r ModelAssessmentRow) ToDomain() domain.ModelAssessment {
 	return domain.ModelAssessment{
 		ID:             r.ID,
 		ProposalID:     r.ProposalID,
+		PushSessionID:  r.PushSessionID,
 		ArtifactID:     r.ArtifactID,
 		ModelRoute:     r.ModelRoute,
 		ModelVersion:   r.ModelVersion,
@@ -513,10 +529,12 @@ func (r PolicyBundleRow) ToDomain() domain.PolicyBundle {
 type PolicyDecisionRow struct {
 	ID             uuid.UUID           `json:"id"`
 	ProposalID     uuid.UUID           `json:"proposal_id"`
+	PushSessionID  *uuid.UUID          `json:"push_session_id,omitempty"`
 	PolicyBundleID uuid.UUID           `json:"policy_bundle_id"`
 	OrgBundleID    *uuid.UUID          `json:"org_bundle_id,omitempty"`
 	RepoBundleID   *uuid.UUID          `json:"repo_bundle_id,omitempty"`
 	Stage          string              `json:"stage"`
+	Enforced       bool                `json:"enforced"`
 	InputDigest    string              `json:"input_digest"`
 	Effect         domain.PolicyEffect `json:"effect"`
 	Reasons        json.RawMessage     `json:"reasons"`
@@ -543,7 +561,10 @@ func (r PolicyDecisionRow) ToDomain() domain.PolicyDecision {
 	return domain.PolicyDecision{
 		ID:             r.ID,
 		ProposalID:     r.ProposalID,
+		PushSessionID:  r.PushSessionID,
 		PolicyBundleID: r.PolicyBundleID,
+		Stage:          domain.PolicyStage(r.Stage),
+		Enforced:       r.Enforced,
 		InputDigest:    r.InputDigest,
 		Effect:         r.Effect,
 		Reasons:        reasons,
@@ -643,6 +664,218 @@ type PublicationAttemptRow struct {
 	ErrorMessage   *string    `json:"error_message,omitempty"`
 	StartedAt      time.Time  `json:"started_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+}
+
+// PushSessionRow represents a row in push_sessions.
+type PushSessionRow struct {
+	ID                     uuid.UUID                   `json:"id"`
+	PrincipalID            uuid.UUID                   `json:"principal_id"`
+	RepositoryID           *uuid.UUID                  `json:"repository_id,omitempty"`
+	Destination            string                      `json:"destination"`
+	DestinationHost        string                      `json:"destination_host"`
+	DestinationRegistered  bool                        `json:"destination_registered"`
+	DestinationExternal    bool                        `json:"destination_external"`
+	Transport              domain.PushTransport        `json:"transport"`
+	RefUpdates             json.RawMessage             `json:"ref_updates"`
+	HasLFS                 bool                        `json:"has_lfs"`
+	LFSObjects             json.RawMessage             `json:"lfs_objects"`
+	LFSObjectCount         int64                       `json:"lfs_object_count"`
+	LFSTotalBytes          int64                       `json:"lfs_total_bytes"`
+	PushManifestDigest     *string                     `json:"push_manifest_digest,omitempty"`
+	BundleArtifactID       *uuid.UUID                  `json:"bundle_artifact_id,omitempty"`
+	EgressMode             domain.EgressMode           `json:"egress_mode"`
+	PassiveAuditDelivery   domain.PassiveAuditDelivery `json:"passive_audit_delivery"`
+	Enforced               bool                        `json:"enforced"`
+	Status                 domain.PushSessionStatus    `json:"status"`
+	Verdict                *domain.PolicyEffect        `json:"verdict,omitempty"`
+	LatestPolicyDecisionID *uuid.UUID                  `json:"latest_policy_decision_id,omitempty"`
+	ApprovalReleaseID      *uuid.UUID                  `json:"approval_release_id,omitempty"`
+	ErrorCode              *string                     `json:"error_code,omitempty"`
+	ErrorMessage           *string                     `json:"error_message,omitempty"`
+	UpstreamForwarded      bool                        `json:"upstream_forwarded"`
+	UpstreamBytesSent      int64                       `json:"upstream_bytes_sent"`
+	CreatedAt              time.Time                   `json:"created_at"`
+	UpdatedAt              time.Time                   `json:"updated_at"`
+	CompletedAt            *time.Time                  `json:"completed_at,omitempty"`
+}
+
+// ToDomain converts PushSessionRow to domain.PushSession.
+func (r PushSessionRow) ToDomain() domain.PushSession {
+	refs := []domain.PushRefUpdate{}
+	if len(r.RefUpdates) > 0 {
+		var parsed []domain.PushRefUpdate
+		if err := json.Unmarshal(r.RefUpdates, &parsed); err == nil && parsed != nil {
+			refs = parsed
+		}
+	}
+	lfs := []domain.PushLFSObject{}
+	if len(r.LFSObjects) > 0 {
+		var parsed []domain.PushLFSObject
+		if err := json.Unmarshal(r.LFSObjects, &parsed); err == nil && parsed != nil {
+			lfs = parsed
+		}
+	}
+	return domain.PushSession{
+		ID:                     r.ID,
+		PrincipalID:            r.PrincipalID,
+		RepositoryID:           r.RepositoryID,
+		Destination:            r.Destination,
+		DestinationHost:        r.DestinationHost,
+		DestinationRegistered:  r.DestinationRegistered,
+		DestinationExternal:    r.DestinationExternal,
+		Transport:              r.Transport,
+		RefUpdates:             refs,
+		HasLFS:                 r.HasLFS,
+		LFSObjects:             lfs,
+		LFSObjectCount:         r.LFSObjectCount,
+		LFSTotalBytes:          r.LFSTotalBytes,
+		PushManifestDigest:     derefString(r.PushManifestDigest),
+		BundleArtifactID:       r.BundleArtifactID,
+		EgressMode:             r.EgressMode,
+		PassiveAuditDelivery:   r.PassiveAuditDelivery,
+		Enforced:               r.Enforced,
+		Status:                 r.Status,
+		Verdict:                r.Verdict,
+		LatestPolicyDecisionID: r.LatestPolicyDecisionID,
+		ApprovalReleaseID:      r.ApprovalReleaseID,
+		ErrorCode:              derefString(r.ErrorCode),
+		ErrorMessage:           derefString(r.ErrorMessage),
+		UpstreamForwarded:      r.UpstreamForwarded,
+		UpstreamBytesSent:      r.UpstreamBytesSent,
+		CreatedAt:              r.CreatedAt.UTC(),
+		UpdatedAt:              r.UpdatedAt.UTC(),
+		CompletedAt:            utcPtr(r.CompletedAt),
+	}
+}
+
+// PushApprovalReleaseRow represents a row in push_approval_releases.
+type PushApprovalReleaseRow struct {
+	ID                      uuid.UUID  `json:"id"`
+	PrincipalID             uuid.UUID  `json:"principal_id"`
+	Destination             string     `json:"destination"`
+	PushManifestDigest      string     `json:"push_manifest_digest"`
+	PushSessionID           uuid.UUID  `json:"push_session_id"`
+	ConsumedByPushSessionID *uuid.UUID `json:"consumed_by_push_session_id,omitempty"`
+	PolicyDecisionID        uuid.UUID  `json:"policy_decision_id"`
+	ApprovedBy              uuid.UUID  `json:"approved_by"`
+	Reason                  *string    `json:"reason,omitempty"`
+	ExpiresAt               time.Time  `json:"expires_at"`
+	ConsumedAt              *time.Time `json:"consumed_at,omitempty"`
+	RevokedAt               *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+}
+
+// ToDomain converts PushApprovalReleaseRow to domain.PushApprovalRelease.
+func (r PushApprovalReleaseRow) ToDomain() domain.PushApprovalRelease {
+	return domain.PushApprovalRelease{
+		ID:                      r.ID,
+		PrincipalID:             r.PrincipalID,
+		Destination:             r.Destination,
+		PushManifestDigest:      r.PushManifestDigest,
+		PushSessionID:           r.PushSessionID,
+		ConsumedByPushSessionID: r.ConsumedByPushSessionID,
+		PolicyDecisionID:        r.PolicyDecisionID,
+		ApprovedBy:              r.ApprovedBy,
+		Reason:                  derefString(r.Reason),
+		ExpiresAt:               r.ExpiresAt.UTC(),
+		ConsumedAt:              utcPtr(r.ConsumedAt),
+		RevokedAt:               utcPtr(r.RevokedAt),
+		CreatedAt:               r.CreatedAt.UTC(),
+	}
+}
+
+// IPFingerprintCorpusRow represents a row in ip_fingerprint_corpora.
+type IPFingerprintCorpusRow struct {
+	ID                uuid.UUID             `json:"id"`
+	Name              string                `json:"name"`
+	Description       *string               `json:"description,omitempty"`
+	Classification    domain.Classification `json:"classification"`
+	RepositoryID      *uuid.UUID            `json:"repository_id,omitempty"`
+	SourceRef         string                `json:"source_ref"`
+	WinnowK           int                   `json:"winnow_k"`
+	WinnowW           int                   `json:"winnow_w"`
+	ChunkSizeBytes    int                   `json:"chunk_size_bytes"`
+	Enabled           bool                  `json:"enabled"`
+	Status            domain.IPCorpusStatus `json:"status"`
+	FingerprintCount  int64                 `json:"fingerprint_count"`
+	LastIndexedDigest *string               `json:"last_indexed_digest,omitempty"`
+	LastIndexedAt     *time.Time            `json:"last_indexed_at,omitempty"`
+	LastError         *string               `json:"last_error,omitempty"`
+	CreatedBy         *uuid.UUID            `json:"created_by,omitempty"`
+	CreatedAt         time.Time             `json:"created_at"`
+	UpdatedAt         time.Time             `json:"updated_at"`
+}
+
+// ToDomain converts IPFingerprintCorpusRow to domain.IPFingerprintCorpus.
+func (r IPFingerprintCorpusRow) ToDomain() domain.IPFingerprintCorpus {
+	return domain.IPFingerprintCorpus{
+		ID:                r.ID,
+		Name:              r.Name,
+		Description:       derefString(r.Description),
+		Classification:    r.Classification,
+		RepositoryID:      r.RepositoryID,
+		SourceRef:         r.SourceRef,
+		WinnowK:           r.WinnowK,
+		WinnowW:           r.WinnowW,
+		ChunkSizeBytes:    r.ChunkSizeBytes,
+		Enabled:           r.Enabled,
+		Status:            r.Status,
+		FingerprintCount:  r.FingerprintCount,
+		LastIndexedDigest: derefString(r.LastIndexedDigest),
+		LastIndexedAt:     utcPtr(r.LastIndexedAt),
+		LastError:         derefString(r.LastError),
+		CreatedBy:         r.CreatedBy,
+		CreatedAt:         r.CreatedAt.UTC(),
+		UpdatedAt:         r.UpdatedAt.UTC(),
+	}
+}
+
+// IPFingerprintRow represents a row in ip_fingerprints.
+type IPFingerprintRow struct {
+	ID              uuid.UUID               `json:"id"`
+	CorpusID        uuid.UUID               `json:"corpus_id"`
+	Layer           domain.FingerprintLayer `json:"layer"`
+	FingerprintHash string                  `json:"fingerprint_hash"`
+	FilePathHash    *string                 `json:"file_path_hash,omitempty"`
+	Language        *string                 `json:"language,omitempty"`
+	ChunkIndex      *int                    `json:"chunk_index,omitempty"`
+	LineStart       *int                    `json:"line_start,omitempty"`
+	LineEnd         *int                    `json:"line_end,omitempty"`
+	TokenCount      *int                    `json:"token_count,omitempty"`
+	Metadata        json.RawMessage         `json:"metadata"`
+	CreatedAt       time.Time               `json:"created_at"`
+}
+
+// ToDomain converts IPFingerprintRow to domain.IPFingerprint.
+func (r IPFingerprintRow) ToDomain() domain.IPFingerprint {
+	metadata := make(map[string]any)
+	if len(r.Metadata) > 0 {
+		var parsed map[string]any
+		if err := json.Unmarshal(r.Metadata, &parsed); err == nil && parsed != nil {
+			metadata = parsed
+		}
+	}
+	return domain.IPFingerprint{
+		ID:              r.ID,
+		CorpusID:        r.CorpusID,
+		Layer:           r.Layer,
+		FingerprintHash: r.FingerprintHash,
+		FilePathHash:    derefString(r.FilePathHash),
+		Language:        derefString(r.Language),
+		ChunkIndex:      r.ChunkIndex,
+		LineStart:       r.LineStart,
+		LineEnd:         r.LineEnd,
+		TokenCount:      r.TokenCount,
+		Metadata:        metadata,
+		CreatedAt:       r.CreatedAt.UTC(),
+	}
+}
+
+// IPFingerprintLookupRow joins an IPFingerprintRow with its parent corpus metadata.
+type IPFingerprintLookupRow struct {
+	IPFingerprintRow
+	CorpusName     string                `json:"corpus_name"`
+	Classification domain.Classification `json:"classification"`
 }
 
 func derefString(s *string) string {

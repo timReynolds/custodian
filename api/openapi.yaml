@@ -23,6 +23,9 @@ tags:
   - name: Policies
   - name: Operations
   - name: Audit
+  - name: Pushes
+  - name: Repositories
+  - name: IPCorpora
 
 paths:
   /v1/workspaces:
@@ -578,6 +581,262 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /v1/pushes:
+    get:
+      tags: [Pushes]
+      operationId: listPushes
+      summary: List push gateway sessions with optional filters and cursor pagination.
+      parameters:
+        - name: repository_id
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/common.yaml#/UUIDv7"
+        - name: principal_id
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/common.yaml#/UUIDv7"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/pushes.yaml#/PushSessionStatus"
+        - name: egress_mode
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/pushes.yaml#/EgressMode"
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated list of push sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/pushes.yaml#/PushListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/pushes/{id}:
+    get:
+      tags: [Pushes]
+      operationId: getPush
+      summary: Retrieve push gateway session details, scan runs, sanitized findings, assessments, policy decisions, and approval releases.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Push session details.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/pushes.yaml#/PushSession"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/pushes/{id}/approvals:
+    post:
+      tags: [Pushes, Approvals]
+      operationId: approvePush
+      summary: Issue or reject a single-use expiring push approval release bound to principal, destination, and push_manifest_digest.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/pushes.yaml#/ApprovePushRequest"
+      responses:
+        "201":
+          description: Push approval release recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/pushes.yaml#/PushApprovalReleaseResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/repositories/{id}/egress-mode:
+    put:
+      tags: [Repositories]
+      operationId: setRepositoryEgressMode
+      summary: Configure repository push egress mode, passive audit delivery, and destination registry metadata.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/repositories.yaml#/SetRepositoryEgressModeRequest"
+      responses:
+        "200":
+          description: Repository egress mode updated.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/repositories.yaml#/RepositoryEgressModeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/ip-corpora:
+    get:
+      tags: [IPCorpora]
+      operationId: listIPCorpora
+      summary: List registered CONFIDENTIAL and RESTRICTED IP fingerprint corpora metadata.
+      parameters:
+        - name: classification
+          in: query
+          required: false
+          schema:
+            $ref: "./schemas/ip_corpora.yaml#/IPCorpusClassification"
+        - name: enabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/CursorParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated list of IP fingerprint corpora metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/ip_corpora.yaml#/IPCorporaListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [IPCorpora]
+      operationId: createIPCorpus
+      summary: Register an IP fingerprint corpus (metadata-only persistence; zero raw source stored).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/ip_corpora.yaml#/CreateIPCorpusRequest"
+      responses:
+        "201":
+          description: IP fingerprint corpus registered.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/ip_corpora.yaml#/IPCorpus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/ip-corpora/{id}/reindex:
+    post:
+      tags: [IPCorpora]
+      operationId: reindexIPCorpus
+      summary: Trigger deterministic IP corpus fingerprinting/reindexing without exposing raw source.
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - $ref: "#/components/parameters/IdempotencyKeyRequired"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusRequest"
+      responses:
+        "202":
+          description: IP corpus reindex accepted or completed.
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -745,3 +1004,25 @@ components:
       $ref: "./schemas/operations.yaml#/Operation"
     AuditEventsListResponse:
       $ref: "./schemas/audit.yaml#/AuditEventsListResponse"
+    PushSession:
+      $ref: "./schemas/pushes.yaml#/PushSession"
+    PushListResponse:
+      $ref: "./schemas/pushes.yaml#/PushListResponse"
+    ApprovePushRequest:
+      $ref: "./schemas/pushes.yaml#/ApprovePushRequest"
+    PushApprovalReleaseResponse:
+      $ref: "./schemas/pushes.yaml#/PushApprovalReleaseResponse"
+    SetRepositoryEgressModeRequest:
+      $ref: "./schemas/repositories.yaml#/SetRepositoryEgressModeRequest"
+    RepositoryEgressModeResponse:
+      $ref: "./schemas/repositories.yaml#/RepositoryEgressModeResponse"
+    CreateIPCorpusRequest:
+      $ref: "./schemas/ip_corpora.yaml#/CreateIPCorpusRequest"
+    IPCorpus:
+      $ref: "./schemas/ip_corpora.yaml#/IPCorpus"
+    IPCorporaListResponse:
+      $ref: "./schemas/ip_corpora.yaml#/IPCorporaListResponse"
+    ReindexIPCorpusRequest:
+      $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusRequest"
+    ReindexIPCorpusResponse:
+      $ref: "./schemas/ip_corpora.yaml#/ReindexIPCorpusResponse"

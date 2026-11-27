@@ -17,6 +17,7 @@ const (
 	ArtifactKindPublicationManifest ArtifactKind = "PUBLICATION_MANIFEST"
 	ArtifactKindScanEvidence        ArtifactKind = "SCAN_EVIDENCE"
 	ArtifactKindModelEvidence       ArtifactKind = "MODEL_EVIDENCE"
+	ArtifactKindGitPushBundle       ArtifactKind = "GIT_PUSH_BUNDLE"
 )
 
 func (k ArtifactKind) IsValid() bool {
@@ -28,7 +29,8 @@ func (k ArtifactKind) IsValid() bool {
 		ArtifactKindCanonicalDiff,
 		ArtifactKindPublicationManifest,
 		ArtifactKindScanEvidence,
-		ArtifactKindModelEvidence:
+		ArtifactKindModelEvidence,
+		ArtifactKindGitPushBundle:
 		return true
 	default:
 		return false

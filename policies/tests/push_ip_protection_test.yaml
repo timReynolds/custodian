@@ -1,0 +1,542 @@
+apiVersion: custodian.dev/v1
+kind: PolicyTestSuite
+metadata:
+  name: push-ip-protection-suite
+  description: Verifies push-ip-protection PUSH_EGRESS policy rules across clean, unregistered/external, IP/concealment, and Stage B NOT_REQUIRED scenarios.
+bundle: ../defaults/push-ip-protection.yaml
+cases:
+  - name: clean_internal_registered_push_not_required_allow
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+        ip_risk: NONE
+      destination:
+        host: github.com
+        name: acme/app
+        registered: true
+        external: false
+      push:
+        has_lfs: false
+        ref_names: ["refs/heads/main"]
+        commit_count: 1
+        egress_mode: ENFORCE_BLOCK
+    expect:
+      effect: ALLOW
+      matched_rules: [push.allow]
+
+  - name: clean_internal_registered_push_complete_clear_allow
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: CLEAR
+        ip_risk: NONE
+      destination:
+        host: github.com
+        name: acme/app
+        registered: true
+        external: false
+    expect:
+      effect: ALLOW
+      matched_rules: [push.allow]
+
+  - name: unregistered_destination_deny
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        host: github.com
+        name: personal/fork
+        registered: false
+        external: false
+    expect:
+      effect: DENY
+      matched_rules: [push.destination.unregistered_or_external]
+
+  - name: external_registered_destination_deny
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        host: git.partner.example
+        name: partner/mirror
+        registered: true
+        external: true
+    expect:
+      effect: DENY
+      matched_rules: [push.destination.unregistered_or_external]
+
+  - name: restricted_ip_match_deny_even_when_stage_b_not_required
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+        restricted_ip_matches: 1
+        ip_exact_matches: 1
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: DENY
+      matched_rules: [push.ip.restricted.block, push.ip.confidential.review]
+
+  - name: header_strip_match_deny
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+        ip_header_strip_matches: 1
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: DENY
+      matched_rules: [push.ip.header_strip.block]
+
+  - name: concealment_finding_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+        concealment_findings: 1
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.concealment.quarantine]
+
+  - name: confidential_ip_match_requires_ip_review
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+        confidential_ip_matches: 1
+        ip_winnow_matches: 2
+      assessment:
+        status: COMPLETE
+        disposition: REVIEW
+        ip_risk: MEDIUM
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.ip.confidential.review, push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: ip-review
+          minimum: 1
+        - type: HUMAN_REVIEW
+          reviewer_group: security-team
+          minimum: 1
+
+  - name: critical_secret_deny
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+        critical_secrets: 1
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: DENY
+      matched_rules: [push.secrets.block]
+
+  - name: incomplete_scan_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: false
+      assessment:
+        status: NOT_REQUIRED
+        disposition: NOT_REQUIRED
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.scan.incomplete]
+
+  - name: stage_b_missing_or_failed_or_indeterminate_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: FAILED
+        disposition: CLEAR
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+
+  - name: stage_b_indeterminate_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: INDETERMINATE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+
+  - name: stage_b_block_disposition_deny
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: BLOCK
+        ip_risk: CRITICAL
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: DENY
+      matched_rules: [push.model.block, push.ip.review]
+
+  - name: stage_b_ip_provenance_review_medium_ip_risk_requires_approval
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: REVIEW
+        risk: MEDIUM
+        ip_risk: MEDIUM
+        assessment_type: IP_PROVENANCE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.ip.review, push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: ip-review
+          minimum: 1
+        - type: HUMAN_REVIEW
+          reviewer_group: security-team
+          minimum: 1
+
+  - name: stage_b_ip_provenance_review_low_ip_risk_requires_approval
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: REVIEW
+        risk: LOW
+        ip_risk: LOW
+        assessment_type: IP_PROVENANCE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.ip.review, push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: ip-review
+          minimum: 1
+
+  - name: stage_b_security_review_escalate_high_risk_requires_approval
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: ESCALATE
+        risk: HIGH
+        ip_risk: NONE
+        assessment_type: SECURITY_REVIEW
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: security-team
+          minimum: 1
+
+  - name: stage_b_security_review_escalate_critical_risk_requires_approval
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: ESCALATE
+        risk: CRITICAL
+        ip_risk: NONE
+        assessment_type: SECURITY_REVIEW
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: security-team
+          minimum: 1
+
+  - name: stage_b_complete_clear_high_risk_requires_approval
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: CLEAR
+        risk: HIGH
+        ip_risk: NONE
+        assessment_type: SECURITY_REVIEW
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: security-team
+          minimum: 1
+
+  - name: stage_b_ip_risk_high_requires_ip_review
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: CLEAR
+        risk: HIGH
+        ip_risk: HIGH
+        assessment_type: IP_PROVENANCE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: REQUIRE_APPROVAL
+      matched_rules: [push.ip.review, push.model.review]
+      absent_rules: [push.allow]
+      obligations:
+        - type: HUMAN_REVIEW
+          reviewer_group: ip-review
+          minimum: 1
+
+  - name: stage_b_complete_not_required_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: NOT_REQUIRED
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow]
+
+  - name: stage_b_complete_empty_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: ""
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow]
+
+  - name: stage_b_complete_bogus_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: COMPLETE
+        disposition: BOGUS
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow]
+
+  - name: stage_b_not_required_empty_disposition_allow
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: ""
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: ALLOW
+      matched_rules: [push.allow]
+
+  - name: stage_b_not_required_clear_disposition_allow
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: CLEAR
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: ALLOW
+      matched_rules: [push.allow]
+
+  - name: stage_b_not_required_review_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: REVIEW
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow, push.model.review, push.ip.review]
+
+  - name: stage_b_not_required_escalate_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: ESCALATE
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow, push.model.review, push.ip.review]
+
+  - name: stage_b_not_required_bogus_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: BOGUS
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow]
+
+  - name: stage_b_not_required_indeterminate_disposition_quarantine
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: INDETERMINATE
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: QUARANTINE
+      matched_rules: [push.model.indeterminate]
+      absent_rules: [push.allow]
+
+  - name: stage_b_not_required_block_disposition_deny
+    stage: PUSH_EGRESS
+    input:
+      findings:
+        scan_complete: true
+      assessment:
+        status: NOT_REQUIRED
+        disposition: BLOCK
+        ip_risk: NONE
+      destination:
+        registered: true
+        external: false
+    expect:
+      effect: DENY
+      matched_rules: [push.model.block, push.model.indeterminate]
+      absent_rules: [push.allow]

@@ -1,0 +1,50 @@
+SetRepositoryEgressModeRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - egress_mode
+  properties:
+    egress_mode:
+      $ref: "./pushes.yaml#/EgressMode"
+    passive_audit_delivery:
+      $ref: "./pushes.yaml#/PassiveAuditDelivery"
+    git_remote_url:
+      type: string
+      minLength: 1
+      maxLength: 512
+    remote_host:
+      type: string
+      minLength: 1
+      maxLength: 255
+    registered_destination:
+      type: boolean
+    external:
+      type: boolean
+
+RepositoryEgressModeResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - repository_id
+    - egress_mode
+    - passive_audit_delivery
+  properties:
+    repository_id:
+      $ref: "./common.yaml#/UUIDv7"
+    full_name:
+      type: ["string", "null"]
+    egress_mode:
+      $ref: "./pushes.yaml#/EgressMode"
+    passive_audit_delivery:
+      $ref: "./pushes.yaml#/PassiveAuditDelivery"
+    git_remote_url:
+      type: ["string", "null"]
+    remote_host:
+      type: ["string", "null"]
+    registered_destination:
+      type: boolean
+    external:
+      type: boolean
+    updated_at:
+      type: ["string", "null"]
+      format: date-time

@@ -10,8 +10,10 @@ import (
 	"github.com/timreynolds/custodian/internal/domain"
 )
 
+const repositoryColumns = `id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at`
+
 const getRepositoryByIDSQL = `
-SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 FROM repositories
 WHERE id = $1
 `
@@ -28,7 +30,7 @@ func (q *Queries) GetRepositoryByID(ctx context.Context, id uuid.UUID) (Reposito
 }
 
 const getRepositoryByGitHubIDSQL = `
-SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 FROM repositories
 WHERE github_repository_id = $1
 `
@@ -45,7 +47,7 @@ func (q *Queries) GetRepositoryByGitHubID(ctx context.Context, githubRepoID int6
 }
 
 const getRepositoryByFullNameSQL = `
-SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 FROM repositories
 WHERE full_name = $1
 ORDER BY created_at DESC, id DESC
@@ -64,8 +66,28 @@ func (q *Queries) GetRepositoryByFullName(ctx context.Context, fullName string) 
 	return row, nil
 }
 
+const getRepositoryByGitRemoteURLSQL = `
+SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
+FROM repositories
+WHERE git_remote_url = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetRepositoryByGitRemoteURL(ctx context.Context, remoteURL string) (RepositoryRow, error) {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" {
+		return RepositoryRow{}, domain.BadRequest("INVALID_REMOTE_URL", "git_remote_url must not be empty")
+	}
+	var row RepositoryRow
+	if err := scanRepositoryRow(q.db.QueryRow(ctx, getRepositoryByGitRemoteURLSQL, trimmed), &row); err != nil {
+		return RepositoryRow{}, MapError(err)
+	}
+	return row, nil
+}
+
 const listRepositoriesSQL = `
-SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+SELECT id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 FROM repositories
 ORDER BY created_at DESC, id DESC
 LIMIT $1
@@ -97,6 +119,34 @@ func (q *Queries) ListRepositories(ctx context.Context, limit int32) ([]Reposito
 	return out, nil
 }
 
+const updateRepositoryEgressModeSQL = `
+UPDATE repositories
+SET egress_mode            = $2,
+    passive_audit_delivery = $3
+WHERE id = $1
+RETURNING id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
+`
+
+func (q *Queries) UpdateRepositoryEgressMode(ctx context.Context, id uuid.UUID, egressMode domain.EgressMode, delivery domain.PassiveAuditDelivery) (RepositoryRow, error) {
+	if id == uuid.Nil {
+		return RepositoryRow{}, domain.BadRequest("INVALID_ID", "repository id must not be nil")
+	}
+	if !egressMode.IsValid() {
+		return RepositoryRow{}, domain.BadRequest("INVALID_EGRESS_MODE", "invalid egress_mode")
+	}
+	if delivery == "" {
+		delivery = domain.PassiveAuditDeliveryAsync
+	}
+	if !delivery.IsValid() {
+		return RepositoryRow{}, domain.BadRequest("INVALID_PASSIVE_AUDIT_DELIVERY", "invalid passive_audit_delivery")
+	}
+	var row RepositoryRow
+	if err := scanRepositoryRow(q.db.QueryRow(ctx, updateRepositoryEgressModeSQL, id, string(egressMode), string(delivery)), &row); err != nil {
+		return RepositoryRow{}, MapError(err)
+	}
+	return row, nil
+}
+
 type UpsertRepositoryParams struct {
 	ID                      uuid.UUID
 	GitHubRepositoryID      int64
@@ -106,23 +156,33 @@ type UpsertRepositoryParams struct {
 	Enabled                 bool
 	AllowedModelRoutes      []string
 	MaxConcurrentOperations int
+	EgressMode              domain.EgressMode
+	PassiveAuditDelivery    domain.PassiveAuditDelivery
+	GitRemoteURL            string
+	RemoteHost              string
+	RegisteredDestination   *bool
+	External                *bool
 	CreatedAt               time.Time
 }
 
 const createRepositorySQL = `
 INSERT INTO repositories (
-    id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+    id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations,
+    egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13, $14, $15
 )
-RETURNING id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+RETURNING id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 `
 
 const upsertRepositorySQL = `
 INSERT INTO repositories (
-    id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+    id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations,
+    egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13, $14, $15
 )
 ON CONFLICT (github_repository_id) DO UPDATE SET
     github_installation_id    = EXCLUDED.github_installation_id,
@@ -130,40 +190,56 @@ ON CONFLICT (github_repository_id) DO UPDATE SET
     classification            = EXCLUDED.classification,
     enabled                   = EXCLUDED.enabled,
     allowed_model_routes      = EXCLUDED.allowed_model_routes,
-    max_concurrent_operations = EXCLUDED.max_concurrent_operations
-RETURNING id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, created_at
+    max_concurrent_operations = EXCLUDED.max_concurrent_operations,
+    egress_mode               = CASE WHEN $16::boolean THEN EXCLUDED.egress_mode ELSE repositories.egress_mode END,
+    passive_audit_delivery    = CASE WHEN $17::boolean THEN EXCLUDED.passive_audit_delivery ELSE repositories.passive_audit_delivery END,
+    git_remote_url            = COALESCE(EXCLUDED.git_remote_url, repositories.git_remote_url),
+    remote_host               = CASE WHEN $18::boolean THEN EXCLUDED.remote_host ELSE repositories.remote_host END,
+    registered_destination    = CASE WHEN $19::boolean THEN EXCLUDED.registered_destination ELSE repositories.registered_destination END,
+    external                  = CASE WHEN $20::boolean THEN EXCLUDED.external ELSE repositories.external END
+RETURNING id, github_repository_id, github_installation_id, full_name, classification, enabled, allowed_model_routes, max_concurrent_operations, egress_mode, passive_audit_delivery, git_remote_url, remote_host, registered_destination, external, created_at
 `
 
-func (q *Queries) CreateRepository(ctx context.Context, arg UpsertRepositoryParams) (RepositoryRow, error) {
-	return q.execRepositoryWrite(ctx, createRepositorySQL, arg)
+type normalizedRepoArgs struct {
+	id            uuid.UUID
+	routes        []string
+	maxConc       int
+	egressMode    domain.EgressMode
+	setEgressMode bool
+	delivery      domain.PassiveAuditDelivery
+	setDelivery   bool
+	gitRemoteURL  *string
+	remoteHost    string
+	setRemoteHost bool
+	registered    bool
+	setRegistered bool
+	external      bool
+	setExternal   bool
+	createdAt     time.Time
 }
 
-func (q *Queries) UpsertRepository(ctx context.Context, arg UpsertRepositoryParams) (RepositoryRow, error) {
-	return q.execRepositoryWrite(ctx, upsertRepositorySQL, arg)
-}
-
-func (q *Queries) execRepositoryWrite(ctx context.Context, stmt string, arg UpsertRepositoryParams) (RepositoryRow, error) {
+func validateAndNormalizeRepoArgs(arg UpsertRepositoryParams) (normalizedRepoArgs, error) {
 	if arg.GitHubRepositoryID <= 0 || arg.GitHubInstallationID <= 0 {
-		return RepositoryRow{}, domain.BadRequest("INVALID_REPOSITORY", "github repository and installation IDs must be positive")
+		return normalizedRepoArgs{}, domain.BadRequest("INVALID_REPOSITORY", "github repository and installation IDs must be positive")
 	}
 	if !arg.Classification.IsValid() {
-		return RepositoryRow{}, domain.BadRequest("INVALID_CLASSIFICATION", "invalid repository classification")
+		return normalizedRepoArgs{}, domain.BadRequest("INVALID_CLASSIFICATION", "invalid repository classification")
 	}
 	repo := domain.Repository{
 		FullName: arg.FullName,
 	}
 	if _, _, err := repo.OwnerRepo(); err != nil {
-		return RepositoryRow{}, err
+		return normalizedRepoArgs{}, err
 	}
 	id := arg.ID
 	if id == uuid.Nil {
 		var err error
 		id, err = domain.NewID()
 		if err != nil {
-			return RepositoryRow{}, err
+			return normalizedRepoArgs{}, err
 		}
 	} else if !domain.IsUUIDv7(id) {
-		return RepositoryRow{}, domain.BadRequest("INVALID_ID", "repository id must be UUIDv7")
+		return normalizedRepoArgs{}, domain.BadRequest("INVALID_ID", "repository id must be UUIDv7")
 	}
 	routes := arg.AllowedModelRoutes
 	if routes == nil {
@@ -173,24 +249,111 @@ func (q *Queries) execRepositoryWrite(ctx context.Context, stmt string, arg Upse
 	if maxConc <= 0 {
 		maxConc = 10
 	}
-	createdAt := arg.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = time.Now().UTC().Truncate(time.Microsecond)
-	} else {
-		createdAt = createdAt.UTC().Truncate(time.Microsecond)
+	setEgressMode := arg.EgressMode != ""
+	egressMode := arg.EgressMode
+	if !setEgressMode {
+		egressMode = domain.EgressModePassiveAudit
+	} else if !egressMode.IsValid() {
+		return normalizedRepoArgs{}, domain.BadRequest("INVALID_EGRESS_MODE", "invalid egress_mode")
 	}
+	setDelivery := arg.PassiveAuditDelivery != ""
+	delivery := arg.PassiveAuditDelivery
+	if !setDelivery {
+		delivery = domain.PassiveAuditDeliveryAsync
+	} else if !delivery.IsValid() {
+		return normalizedRepoArgs{}, domain.BadRequest("INVALID_PASSIVE_AUDIT_DELIVERY", "invalid passive_audit_delivery")
+	}
+	trimmedHost := strings.TrimSpace(arg.RemoteHost)
+	setRemoteHost := trimmedHost != ""
+	if !setRemoteHost {
+		trimmedHost = "github.com"
+	}
+	setRegistered := arg.RegisteredDestination != nil
+	registered := true
+	if setRegistered {
+		registered = *arg.RegisteredDestination
+	}
+	setExternal := arg.External != nil
+	external := false
+	if setExternal {
+		external = *arg.External
+	}
+	createdAt := normalizeTimestamp(arg.CreatedAt)
+	return normalizedRepoArgs{
+		id:            id,
+		routes:        routes,
+		maxConc:       maxConc,
+		egressMode:    egressMode,
+		setEgressMode: setEgressMode,
+		delivery:      delivery,
+		setDelivery:   setDelivery,
+		gitRemoteURL:  nilIfEmpty(strings.TrimSpace(arg.GitRemoteURL)),
+		remoteHost:    trimmedHost,
+		setRemoteHost: setRemoteHost,
+		registered:    registered,
+		setRegistered: setRegistered,
+		external:      external,
+		setExternal:   setExternal,
+		createdAt:     createdAt,
+	}, nil
+}
 
+func (q *Queries) CreateRepository(ctx context.Context, arg UpsertRepositoryParams) (RepositoryRow, error) {
+	norm, err := validateAndNormalizeRepoArgs(arg)
+	if err != nil {
+		return RepositoryRow{}, err
+	}
 	var row RepositoryRow
-	err := scanRepositoryRow(q.db.QueryRow(ctx, stmt,
-		id,
+	err = scanRepositoryRow(q.db.QueryRow(ctx, createRepositorySQL,
+		norm.id,
 		arg.GitHubRepositoryID,
 		arg.GitHubInstallationID,
 		arg.FullName,
 		string(arg.Classification),
 		arg.Enabled,
-		routes,
-		maxConc,
-		createdAt,
+		norm.routes,
+		norm.maxConc,
+		string(norm.egressMode),
+		string(norm.delivery),
+		norm.gitRemoteURL,
+		norm.remoteHost,
+		norm.registered,
+		norm.external,
+		norm.createdAt,
+	), &row)
+	if err != nil {
+		return RepositoryRow{}, MapError(err)
+	}
+	return row, nil
+}
+
+func (q *Queries) UpsertRepository(ctx context.Context, arg UpsertRepositoryParams) (RepositoryRow, error) {
+	norm, err := validateAndNormalizeRepoArgs(arg)
+	if err != nil {
+		return RepositoryRow{}, err
+	}
+	var row RepositoryRow
+	err = scanRepositoryRow(q.db.QueryRow(ctx, upsertRepositorySQL,
+		norm.id,
+		arg.GitHubRepositoryID,
+		arg.GitHubInstallationID,
+		arg.FullName,
+		string(arg.Classification),
+		arg.Enabled,
+		norm.routes,
+		norm.maxConc,
+		string(norm.egressMode),
+		string(norm.delivery),
+		norm.gitRemoteURL,
+		norm.remoteHost,
+		norm.registered,
+		norm.external,
+		norm.createdAt,
+		norm.setEgressMode,
+		norm.setDelivery,
+		norm.setRemoteHost,
+		norm.setRegistered,
+		norm.setExternal,
 	), &row)
 	if err != nil {
 		return RepositoryRow{}, MapError(err)
@@ -199,7 +362,7 @@ func (q *Queries) execRepositoryWrite(ctx context.Context, stmt string, arg Upse
 }
 
 func scanRepositoryRow(s rowScanner, row *RepositoryRow) error {
-	var classification string
+	var classification, egressMode, delivery string
 	if err := s.Scan(
 		&row.ID,
 		&row.GitHubRepositoryID,
@@ -209,11 +372,19 @@ func scanRepositoryRow(s rowScanner, row *RepositoryRow) error {
 		&row.Enabled,
 		&row.AllowedModelRoutes,
 		&row.MaxConcurrentOperations,
+		&egressMode,
+		&delivery,
+		&row.GitRemoteURL,
+		&row.RemoteHost,
+		&row.RegisteredDestination,
+		&row.External,
 		&row.CreatedAt,
 	); err != nil {
 		return err
 	}
 	row.Classification = domain.Classification(classification)
+	row.EgressMode = domain.EgressMode(egressMode)
+	row.PassiveAuditDelivery = domain.PassiveAuditDelivery(delivery)
 	if row.AllowedModelRoutes == nil {
 		row.AllowedModelRoutes = []string{}
 	}

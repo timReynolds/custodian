@@ -40,25 +40,58 @@ type RefResolver interface {
 	ResolveRef(ctx context.Context, repo domain.Repository, ref string) (string, error)
 }
 
+// IPCorpusFileInput represents a single source file supplied when registering or reindexing an IP corpus.
+type IPCorpusFileInput struct {
+	Path    string
+	Content string
+	SHA256  string
+}
+
+// IPCorpusReindexInput provides parameters for deterministic IP corpus fingerprinting/reindexing.
+type IPCorpusReindexInput struct {
+	Corpus     domain.IPFingerprintCorpus
+	SourceRef  string
+	SourcePath string
+	Files      []IPCorpusFileInput
+	Force      bool
+	ActorID    uuid.UUID
+}
+
+// IPCorpusReindexResult summarizes the outcome of a corpus reindex invocation.
+type IPCorpusReindexResult struct {
+	OperationID         *uuid.UUID
+	Status              domain.IPCorpusStatus
+	FingerprintsIndexed int64
+	FilesProcessed      int64
+	LastIndexedDigest   string
+	CompletedAt         *time.Time
+}
+
+// IPCorpusReindexer performs deterministic one-way IP corpus indexing without storing raw source.
+type IPCorpusReindexer interface {
+	Reindex(ctx context.Context, input IPCorpusReindexInput) (IPCorpusReindexResult, error)
+}
+
 // Deps holds all dependencies wired into the Custodian REST API router.
 type Deps struct {
-	Store        *persistence.Store
-	OIDC         auth.TokenVerifier
-	Capabilities *auth.CapabilityService
-	Directory    *identity.Directory
-	Snapshots    domain.SnapshotStore
-	GitHubRead   RefResolver
-	Repositories *repositories.Service
-	Workspaces   *workspaces.Service
-	Operations   *operations.Service
-	Audit        *audit.Service
-	Artifacts    *artifacts.Service
-	Proposals    *proposals.Service
-	Approvals    *approvals.Service
-	PolicyEngine *policy.Engine
-	Metrics      *observability.Metrics
-	Tracer       trace.Tracer
-	Logger       *slog.Logger
+	Store             *persistence.Store
+	OIDC              auth.TokenVerifier
+	Capabilities      *auth.CapabilityService
+	Directory         *identity.Directory
+	Snapshots         domain.SnapshotStore
+	GitHubRead        RefResolver
+	Repositories      *repositories.Service
+	Workspaces        *workspaces.Service
+	Operations        *operations.Service
+	Audit             *audit.Service
+	Artifacts         *artifacts.Service
+	Proposals         *proposals.Service
+	Approvals         *approvals.Service
+	PolicyEngine      *policy.Engine
+	IPCorpusReindexer IPCorpusReindexer
+	Metrics           *observability.Metrics
+	Tracer            trace.Tracer
+	Logger            *slog.Logger
 
 	BaseURL              string
 	RepoConcurrencyLimit int
@@ -80,7 +113,7 @@ type server struct {
 }
 
 // NewRouter constructs the chi HTTP handler implementing operational endpoints,
-// capability upload endpoints, and all 16 OpenAPI 3.1 /v1 endpoints.
+// capability upload endpoints, and all 22 OpenAPI 3.1 /v1 paths (23 operations).
 func NewRouter(deps Deps) http.Handler {
 	return newServer(deps).routes()
 }
@@ -161,6 +194,16 @@ func (s *server) routes() http.Handler {
 
 		v1.Get("/operations/{id}", s.handleGetOperation)
 		v1.Get("/audit/events", s.handleListAuditEvents)
+
+		v1.Get("/pushes", s.handleListPushes)
+		v1.Get("/pushes/{id}", s.handleGetPush)
+		v1.Post("/pushes/{id}/approvals", s.handleApprovePush)
+
+		v1.Put("/repositories/{id}/egress-mode", s.handleSetRepositoryEgressMode)
+
+		v1.Get("/ip-corpora", s.handleListIPCorpora)
+		v1.Post("/ip-corpora", s.handleCreateIPCorpus)
+		v1.Post("/ip-corpora/{id}/reindex", s.handleReindexIPCorpus)
 	})
 
 	return r

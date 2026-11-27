@@ -23,6 +23,7 @@ type pgConfig struct {
 	fsync           bool
 	externalDSN     string
 	allowDockerSkip bool
+	runInShort      bool
 }
 
 // PGOption configures StartPGDocker.
@@ -52,6 +53,11 @@ func WithPGAllowDockerSkip(allow bool) PGOption {
 	return func(c *pgConfig) { c.allowDockerSkip = allow }
 }
 
+// WithPGRunInShort allows StartPGDocker to run even when testing.Short() is true.
+func WithPGRunInShort(enable bool) PGOption {
+	return func(c *pgConfig) { c.runInShort = enable }
+}
+
 // PGDocker manages an ephemeral postgres:17-alpine Docker container bound to 127.0.0.1::<ephemeral>.
 type PGDocker struct {
 	dsn         string
@@ -79,6 +85,10 @@ func StartPGDocker(t testing.TB, opts ...PGOption) *PGDocker {
 		if opt != nil {
 			opt(&cfg)
 		}
+	}
+
+	if testing.Short() && !cfg.runInShort && os.Getenv("CUSTODIAN_TEST_FORCE_DOCKER") != "1" {
+		t.Skip("skipping PGDocker under -short (set CUSTODIAN_TEST_FORCE_DOCKER=1 to override)")
 	}
 
 	if cfg.externalDSN == "" {

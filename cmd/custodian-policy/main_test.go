@@ -121,4 +121,18 @@ rules:
 	if code := run(ctx, []string{"test", "../../policies/tests"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("custodian-policy test ../../policies/tests expected 0, got %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
 	}
+
+	// validate --bundle push-ip-protection.yaml --tests push_ip_protection_test.yaml exits 0.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(ctx, []string{"validate", "--bundle", "../../policies/defaults/push-ip-protection.yaml", "--tests", "../../policies/tests/push_ip_protection_test.yaml", "--format", "json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("validate push-ip-protection with tests expected 0, got %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
+	}
+	var pushValOut map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &pushValOut); err != nil {
+		t.Fatalf("unmarshal push validate JSON: %v (%s)", err, stdout.String())
+	}
+	if valid, _ := pushValOut["valid"].(bool); !valid {
+		t.Fatalf("expected push-ip-protection valid=true, got %+v", pushValOut)
+	}
 }

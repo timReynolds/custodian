@@ -353,6 +353,9 @@ func (s *Service) RequestPublication(ctx context.Context, proposalID uuid.UUID, 
 		if prop.Status != domain.ProposalStatusApproved && prop.Status != domain.ProposalStatusPublishing {
 			return domain.Conflict("PROPOSAL_NOT_APPROVED", fmt.Sprintf("proposal status %s cannot be published", prop.Status))
 		}
+		if err := verifyEnforcedEgressDecisionTx(ctx, tx, prop); err != nil {
+			return err
+		}
 
 		branchName := domain.ExpectedBranchName(prop.ID)
 		if err := domain.ValidateBranchRef(prop.ID, branchName); err != nil {
@@ -670,6 +673,9 @@ func (s *Service) executePublication(ctx context.Context, proposalID uuid.UUID, 
 		}
 		if prop.Status != domain.ProposalStatusApproved && prop.Status != domain.ProposalStatusPublishing {
 			return domain.Conflict("PROPOSAL_NOT_APPROVED", fmt.Sprintf("proposal status %s cannot be published", prop.Status))
+		}
+		if err := verifyEnforcedEgressDecisionTx(ctx, tx, prop); err != nil {
+			return err
 		}
 
 		pubRow, err = tx.EnsurePublication(ctx, persistence.CreatePublicationParams{
@@ -1320,6 +1326,12 @@ func (s *Service) loadAndVerifyPreconditions(ctx context.Context, store TxStore,
 	if prop.LatestPolicyEffect == nil || *prop.LatestPolicyEffect != latestDecision.Effect {
 		return verifiedBundle{}, nil, domain.Conflict("STALE_POLICY_DECISION", "proposal latest_policy_effect does not match latest policy decision")
 	}
+	if !latestDecision.Enforced {
+		return verifiedBundle{}, nil, domain.Forbidden("UNENFORCED_POLICY_DECISION", "unenforced policy decision cannot authorize publication")
+	}
+	if domain.PolicyStage(latestDecision.Stage) != domain.PolicyStageEgress {
+		return verifiedBundle{}, nil, domain.Forbidden("INVALID_POLICY_STAGE", fmt.Sprintf("policy decision stage %q cannot authorize publication", latestDecision.Stage))
+	}
 	if latestDecision.Effect.BlocksPublication() {
 		return verifiedBundle{}, nil, domain.Forbidden("POLICY_BLOCKED", fmt.Sprintf("policy decision effect %s blocks publication", latestDecision.Effect))
 	}
@@ -1392,6 +1404,29 @@ func (s *Service) loadAndVerifyPreconditions(ctx context.Context, store TxStore,
 }
 
 // IsRetryableError classifies errors into retryable transient failures vs terminal failures.
+func verifyEnforcedEgressDecisionTx(ctx context.Context, tx TxStore, prop persistence.ProposalRow) error {
+	if prop.LatestPolicyEvaluationID == nil || *prop.LatestPolicyEvaluationID == uuid.Nil {
+		return domain.Forbidden("MISSING_POLICY_DECISION", "proposal lacks a policy evaluation decision")
+	}
+	dec, err := tx.GetPolicyDecisionByID(ctx, *prop.LatestPolicyEvaluationID)
+	if err != nil {
+		return err
+	}
+	if dec.ProposalID != prop.ID {
+		return domain.Conflict("STALE_POLICY_DECISION", "policy decision does not belong to proposal")
+	}
+	if !dec.Enforced {
+		return domain.Forbidden("UNENFORCED_POLICY_DECISION", "unenforced policy decision cannot authorize publication")
+	}
+	if domain.PolicyStage(dec.Stage) != domain.PolicyStageEgress {
+		return domain.Forbidden("INVALID_POLICY_STAGE", fmt.Sprintf("policy decision stage %q cannot authorize publication", dec.Stage))
+	}
+	if dec.Effect.BlocksPublication() {
+		return domain.Forbidden("POLICY_BLOCKED", fmt.Sprintf("policy decision effect %s blocks publication", dec.Effect))
+	}
+	return nil
+}
+
 func IsRetryableError(err error) bool {
 	if err == nil {
 		return false

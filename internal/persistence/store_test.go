@@ -162,4 +162,32 @@ func TestEmbeddedMigrationsContainRequiredTablesAndIndexes(t *testing.T) {
 			t.Fatalf("up migration missing Spec §10 index %s", idx)
 		}
 	}
+
+	up2Bytes, err := fs.ReadFile(migrations.FS, "000002_push_gateway.up.sql")
+	if err != nil {
+		t.Fatalf("read 000002 up migration: %v", err)
+	}
+	down2Bytes, err := fs.ReadFile(migrations.FS, "000002_push_gateway.down.sql")
+	if err != nil {
+		t.Fatalf("read 000002 down migration: %v", err)
+	}
+	up2SQL := string(up2Bytes)
+	down2SQL := string(down2Bytes)
+
+	pushTables := []string{
+		"push_sessions", "push_approval_releases", "ip_fingerprint_corpora", "ip_fingerprints",
+	}
+	for _, tbl := range pushTables {
+		if !strings.Contains(up2SQL, "CREATE TABLE "+tbl) {
+			t.Fatalf("000002 up migration missing CREATE TABLE %s", tbl)
+		}
+		if !strings.Contains(down2SQL, "DROP TABLE IF EXISTS "+tbl) {
+			t.Fatalf("000002 down migration missing DROP TABLE IF EXISTS %s", tbl)
+		}
+	}
+	for _, token := range []string{"GIT_PUSH_BUNDLE", "PUSH_EGRESS", "NOT_REQUIRED", "enforced", "chk_scan_runs_owner_xor", "chk_model_assessments_owner_xor", "chk_policy_decisions_owner_xor"} {
+		if !strings.Contains(up2SQL, token) {
+			t.Fatalf("000002 up migration missing %q", token)
+		}
+	}
 }

@@ -35,14 +35,23 @@ type scannerExecResult struct {
 	outcome    ScannerOutcome
 	spanCtx    context.Context
 	span       trace.Span
+	duration   time.Duration
 	durationMs int64
 	hasErr     bool
 }
 
 // Inspect executes all mandatory and triggered conditional Stage A scanners against req.TargetDir.
 func (r *DefaultRunner) Inspect(ctx context.Context, req Request) (Report, error) {
-	if req.ProposalID == uuid.Nil {
-		return Report{}, domain.BadRequest("INVALID_PROPOSAL_ID", "proposal_id is required")
+	if req.PushSessionID != nil && *req.PushSessionID == uuid.Nil {
+		return Report{}, domain.BadRequest("INVALID_PUSH_SESSION_ID", "push_session_id must not be nil when provided")
+	}
+	hasProposal := req.ProposalID != uuid.Nil
+	hasPush := req.PushSessionID != nil && *req.PushSessionID != uuid.Nil
+	if !hasProposal && !hasPush {
+		return Report{}, domain.BadRequest("INVALID_PROPOSAL_ID", "proposal_id or push_session_id is required")
+	}
+	if hasProposal && hasPush {
+		return Report{}, domain.BadRequest("INVALID_INSPECTION_OWNER", "proposal_id and push_session_id are mutually exclusive")
 	}
 	if req.ArtifactID == uuid.Nil {
 		return Report{}, domain.BadRequest("INVALID_ARTIFACT_ID", "artifact_id is required")
@@ -55,13 +64,20 @@ func (r *DefaultRunner) Inspect(ctx context.Context, req Request) (Report, error
 	}
 	req.TargetDir = filepath.Clean(req.TargetDir)
 
-	tracer := r.tracer()
-	rootCtx, rootSpan := tracer.Start(ctx, "inspection.stage_a", trace.WithAttributes(
-		attribute.String("proposal_id", req.ProposalID.String()),
+	spanAttrs := []attribute.KeyValue{
 		attribute.String("artifact_id", req.ArtifactID.String()),
 		attribute.String("classification", string(req.Classification)),
 		attribute.String("stage", req.Stage),
-	))
+	}
+	if hasProposal {
+		spanAttrs = append(spanAttrs, attribute.String("proposal_id", req.ProposalID.String()))
+	}
+	if hasPush {
+		spanAttrs = append(spanAttrs, attribute.String("push_session_id", req.PushSessionID.String()))
+	}
+
+	tracer := r.tracer()
+	rootCtx, rootSpan := tracer.Start(ctx, "inspection.stage_a", trace.WithAttributes(spanAttrs...))
 	defer rootSpan.End()
 
 	inv, err := WalkWorkspace(req.TargetDir)
@@ -121,6 +137,9 @@ func (r *DefaultRunner) Inspect(ctx context.Context, req Request) (Report, error
 		}
 
 		r.cfg.Metrics.IncScannerRun(out.ScanRun.Scanner, string(out.ScanRun.Status))
+		if out.ScanRun.Scanner == string(ScannerIPFingerprint) {
+			r.cfg.Metrics.ObservePushIPFingerprint(safeMetricClassificationLabel(string(req.Classification)), res.duration)
+		}
 		if !out.ScanRun.IsCleanComplete() {
 			reason := out.FailureReason
 			if reason == "" {
@@ -139,14 +158,17 @@ func (r *DefaultRunner) Inspect(ctx context.Context, req Request) (Report, error
 		r.logScannerOutcome(res.spanCtx, out, res.durationMs, res.hasErr)
 
 		runs = append(runs, out.ScanRun)
-		for i := range out.Findings {
-			if err := redactor.FinalizeFinding(&out.Findings[i], out.ScanRun.ID); err != nil {
+		for j := range out.Findings {
+			if err := redactor.FinalizeFinding(&out.Findings[j], out.ScanRun.ID); err != nil {
 				rootSpan.RecordError(err)
 				rootSpan.SetStatus(codes.Error, "finding redaction validation failed")
 				r.cfg.Metrics.IncScannerFailure(out.ScanRun.Scanner, "redaction_error")
 				return Report{}, err
 			}
-			findings = append(findings, out.Findings[i])
+			if layerLabel, clsLabel, ok := ipFindingMetricLabels(out.Findings[j]); ok {
+				r.cfg.Metrics.IncPushIPMatch(layerLabel, clsLabel)
+			}
+			findings = append(findings, out.Findings[j])
 		}
 	}
 
@@ -160,12 +182,13 @@ func (r *DefaultRunner) Inspect(ctx context.Context, req Request) (Report, error
 	)
 
 	return Report{
-		ProposalID: req.ProposalID,
-		ArtifactID: req.ArtifactID,
-		ScanRuns:   runs,
-		Findings:   findings,
-		Summary:    summary,
-		redactor:   redactor,
+		ProposalID:    req.ProposalID,
+		PushSessionID: cloneUUIDPtr(req.PushSessionID),
+		ArtifactID:    req.ArtifactID,
+		ScanRuns:      runs,
+		Findings:      findings,
+		Summary:       summary,
+		redactor:      redactor,
 	}, nil
 }
 
@@ -179,7 +202,9 @@ func (r *DefaultRunner) scheduleScanners(req Request, inv *Inventory) []Scanner 
 	if (inv != nil && inv.HasManifests) || slices.Contains(req.MandatoryScanners, string(ScannerTrivy)) {
 		scanners = append(scanners, newTrivyScanner(r.cfg))
 	}
-	if req.Classification == domain.ClassificationRestricted {
+	if req.Stage == StagePushEgress ||
+		req.Classification == domain.ClassificationRestricted ||
+		slices.Contains(req.MandatoryScanners, string(ScannerIPFingerprint)) {
 		scanners = append(scanners, newIPFingerprintScanner(r.cfg.IPFingerprinter))
 	}
 	for _, extra := range r.cfg.ExtraScanners {
@@ -193,11 +218,17 @@ func (r *DefaultRunner) scheduleScanners(req Request, inv *Inventory) []Scanner 
 func (r *DefaultRunner) runSingleScanner(ctx context.Context, tracer trace.Tracer, sc Scanner, req Request, inv *Inventory) scannerExecResult {
 	scannerName := sc.Name()
 	start := time.Now()
-	spanCtx, span := tracer.Start(ctx, "inspection.scanner."+scannerName, trace.WithAttributes(
-		attribute.String("proposal_id", req.ProposalID.String()),
+	spanAttrs := []attribute.KeyValue{
 		attribute.String("artifact_id", req.ArtifactID.String()),
 		attribute.String("scanner", scannerName),
-	))
+	}
+	if req.ProposalID != uuid.Nil {
+		spanAttrs = append(spanAttrs, attribute.String("proposal_id", req.ProposalID.String()))
+	}
+	if req.PushSessionID != nil && *req.PushSessionID != uuid.Nil {
+		spanAttrs = append(spanAttrs, attribute.String("push_session_id", req.PushSessionID.String()))
+	}
+	spanCtx, span := tracer.Start(ctx, "inspection.scanner."+scannerName, trace.WithAttributes(spanAttrs...))
 
 	out, err := sc.Scan(spanCtx, req, inv)
 	if out.ScanRun.ID == uuid.Nil || !domain.IsUUIDv7(out.ScanRun.ID) {
@@ -206,6 +237,7 @@ func (r *DefaultRunner) runSingleScanner(ctx context.Context, tracer trace.Trace
 			out.ScanRun = domain.ScanRun{
 				ID:             domain.MustNewID(),
 				ProposalID:     req.ProposalID,
+				PushSessionID:  cloneUUIDPtr(req.PushSessionID),
 				ArtifactID:     req.ArtifactID,
 				Scanner:        scannerName,
 				ScannerVersion: "unknown",
@@ -240,8 +272,11 @@ func (r *DefaultRunner) runSingleScanner(ctx context.Context, tracer trace.Trace
 			out.FailureReason = "scanner_error"
 		}
 	}
-	if out.ScanRun.ProposalID == uuid.Nil {
+	if out.ScanRun.ProposalID == uuid.Nil && req.ProposalID != uuid.Nil {
 		out.ScanRun.ProposalID = req.ProposalID
+	}
+	if out.ScanRun.PushSessionID == nil && req.PushSessionID != nil {
+		out.ScanRun.PushSessionID = cloneUUIDPtr(req.PushSessionID)
 	}
 	if out.ScanRun.ArtifactID == uuid.Nil {
 		out.ScanRun.ArtifactID = req.ArtifactID
@@ -256,7 +291,8 @@ func (r *DefaultRunner) runSingleScanner(ctx context.Context, tracer trace.Trace
 		out.ScanRun.Coverage.SkippedReasons = []string{}
 	}
 
-	durationMs := time.Since(start).Milliseconds()
+	duration := time.Since(start)
+	durationMs := duration.Milliseconds()
 
 	span.SetAttributes(
 		attribute.String("scan_run_id", out.ScanRun.ID.String()),
@@ -270,6 +306,7 @@ func (r *DefaultRunner) runSingleScanner(ctx context.Context, tracer trace.Trace
 		outcome:    out,
 		spanCtx:    spanCtx,
 		span:       span,
+		duration:   duration,
 		durationMs: durationMs,
 		hasErr:     err != nil,
 	}
@@ -291,6 +328,9 @@ func (r *DefaultRunner) logScannerOutcome(ctx context.Context, out ScannerOutcom
 		slog.Int("files_skipped", out.ScanRun.Coverage.FilesSkipped),
 		slog.Bool("complete", out.ScanRun.Coverage.Complete),
 		slog.Int64("duration_ms", durationMs),
+	}
+	if out.ScanRun.PushSessionID != nil {
+		attrs = append(attrs, slog.String("push_session_id", out.ScanRun.PushSessionID.String()))
 	}
 	if out.FailureReason != "" {
 		attrs = append(attrs, slog.String("error_code", out.FailureReason))
@@ -401,11 +441,142 @@ func buildSummary(runs []domain.ScanRun, findings []domain.Finding, prohibitedLi
 		if f.Category == "SAST" && (f.Severity == domain.SeverityCritical || f.Severity == domain.SeverityHigh) {
 			summary.HighSASTFindings++
 		}
+
+		cat := strings.ToUpper(strings.TrimSpace(f.Category))
+		layer := findingMetadataString(f, "layer")
+		if isIPConcealmentFinding(cat, layer, f.RuleID) {
+			summary.ConcealmentFindings++
+		}
+		if isIPL1ExactFinding(cat, layer, f.RuleID) {
+			summary.IPExactMatches++
+		}
+		if isIPL2WinnowFinding(cat, layer, f.RuleID) {
+			summary.IPWinnowMatches++
+		}
+		if isIPL3HeaderStripFinding(f, cat) {
+			summary.IPHeaderStripMatches++
+		}
+		if isIPCorpusOrMarkerMatch(cat, layer, f.RuleID) {
+			switch findingIPClassification(f) {
+			case string(domain.ClassificationRestricted):
+				summary.RestrictedIPMatches++
+			case string(domain.ClassificationConfidential):
+				summary.ConfidentialIPMatches++
+			}
+		}
 	}
 
 	summary.FailedScanners = dedupeNonEmptyStrings(summary.FailedScanners)
 	summary.IncompleteScanners = dedupeNonEmptyStrings(summary.IncompleteScanners)
 	return summary
+}
+
+func cloneUUIDPtr(in *uuid.UUID) *uuid.UUID {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
+}
+
+func findingMetadataString(f domain.Finding, key string) string {
+	if f.Metadata == nil {
+		return ""
+	}
+	if v, ok := f.Metadata[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+func findingMetadataBool(f domain.Finding, key string) bool {
+	if f.Metadata == nil {
+		return false
+	}
+	v, ok := f.Metadata[key].(bool)
+	return ok && v
+}
+
+func findingIPClassification(f domain.Finding) string {
+	if cls := strings.ToUpper(findingMetadataString(f, "corpus_classification")); cls != "" {
+		return cls
+	}
+	return strings.ToUpper(findingMetadataString(f, "classification"))
+}
+
+func isIPConcealmentFinding(cat, layer, ruleID string) bool {
+	return cat == "CONCEALMENT" || cat == "IP_CONCEALMENT" ||
+		strings.EqualFold(layer, "L4_CONCEALMENT") ||
+		strings.HasPrefix(ruleID, "ip.l4.")
+}
+
+func isIPL1ExactFinding(cat, layer, ruleID string) bool {
+	return cat == "IP_EXACT" ||
+		strings.EqualFold(layer, string(domain.FingerprintLayerL1ExactChunk)) ||
+		strings.HasPrefix(ruleID, "ip.l1.")
+}
+
+func isIPL2WinnowFinding(cat, layer, ruleID string) bool {
+	return cat == "IP_WINNOW" ||
+		strings.EqualFold(layer, string(domain.FingerprintLayerL2WinnowKGram)) ||
+		strings.HasPrefix(ruleID, "ip.l2.")
+}
+
+func isIPL3HeaderStripFinding(f domain.Finding, cat string) bool {
+	return cat == "IP_HEADER_STRIP" ||
+		findingMetadataBool(f, "header_stripped") ||
+		f.RuleID == "ip.l3.header-stripped" ||
+		f.RuleID == "ip.l3.header-strip"
+}
+
+func isIPCorpusOrMarkerMatch(cat, layer, ruleID string) bool {
+	if isIPConcealmentFinding(cat, layer, ruleID) {
+		return false
+	}
+	return cat == "IP_EXACT" ||
+		cat == "IP_WINNOW" ||
+		cat == "IP_HEADER_MARKER" ||
+		cat == "IP_HEADER_STRIP" ||
+		cat == "IP_FINGERPRINT" ||
+		cat == "IP_SIMILARITY" ||
+		strings.HasPrefix(cat, "IP_") ||
+		strings.HasPrefix(ruleID, "ip.l1.") ||
+		strings.HasPrefix(ruleID, "ip.l2.") ||
+		strings.HasPrefix(ruleID, "ip.l3.")
+}
+
+func safeMetricClassificationLabel(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case string(domain.ClassificationPublic):
+		return string(domain.ClassificationPublic)
+	case string(domain.ClassificationInternal):
+		return string(domain.ClassificationInternal)
+	case string(domain.ClassificationConfidential):
+		return string(domain.ClassificationConfidential)
+	case string(domain.ClassificationRestricted):
+		return string(domain.ClassificationRestricted)
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func ipFindingMetricLabels(f domain.Finding) (layer string, classification string, ok bool) {
+	cat := strings.ToUpper(strings.TrimSpace(f.Category))
+	metaLayer := strings.ToUpper(findingMetadataString(f, "layer"))
+	switch {
+	case isIPConcealmentFinding(cat, metaLayer, f.RuleID):
+		return "L4_CONCEALMENT", "CONCEALMENT", true
+	case isIPL1ExactFinding(cat, metaLayer, f.RuleID):
+		return string(domain.FingerprintLayerL1ExactChunk), safeMetricClassificationLabel(findingIPClassification(f)), true
+	case isIPL2WinnowFinding(cat, metaLayer, f.RuleID):
+		return string(domain.FingerprintLayerL2WinnowKGram), safeMetricClassificationLabel(findingIPClassification(f)), true
+	case cat == "IP_HEADER_MARKER" || cat == "IP_HEADER_STRIP" || strings.EqualFold(metaLayer, string(domain.FingerprintLayerL3HeaderMarker)) || strings.HasPrefix(f.RuleID, "ip.l3."):
+		return string(domain.FingerprintLayerL3HeaderMarker), safeMetricClassificationLabel(findingIPClassification(f)), true
+	case isIPCorpusOrMarkerMatch(cat, metaLayer, f.RuleID):
+		return "IP_OTHER", safeMetricClassificationLabel(findingIPClassification(f)), true
+	default:
+		return "", "", false
+	}
 }
 
 func isFindingProhibitedLicense(f domain.Finding, prohibited []string) bool {

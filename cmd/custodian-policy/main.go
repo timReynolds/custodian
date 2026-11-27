@@ -34,7 +34,7 @@ const validateUsageText = `Usage:
 `
 
 const evaluateUsageText = `Usage:
-  custodian-policy evaluate --bundle <path> [--org-bundle <path>] --input <path> [--stage INGRESS|EGRESS] [--format json|text]
+  custodian-policy evaluate --bundle <path> [--org-bundle <path>] --input <path> [--stage INGRESS|EGRESS|PUSH_EGRESS] [--format json|text]
 `
 
 const testUsageText = `Usage:
@@ -179,7 +179,7 @@ func runEvaluate(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	fs.StringVar(&bundlePath, "bundle", "", "path to PolicyBundle YAML file")
 	fs.StringVar(&orgBundlePath, "org-bundle", "", "optional path to ORG PolicyBundle YAML file")
 	fs.StringVar(&inputPath, "input", "", "path to JSON input file")
-	fs.StringVar(&stage, "stage", "", "policy stage (INGRESS|EGRESS)")
+	fs.StringVar(&stage, "stage", "", "policy stage (INGRESS|EGRESS|PUSH_EGRESS)")
 	fs.StringVar(&format, "format", "json", "output format (json|text)")
 	fs.BoolVar(&help, "help", false, "show help")
 	fs.BoolVar(&help, "h", false, "show help")
@@ -240,7 +240,7 @@ func runEvaluate(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		}
 	}
 	if !policy.IsValidStage(resolvedStage) {
-		_, _ = fmt.Fprintf(stderr, "error: invalid stage %q (must be INGRESS or EGRESS)\n", resolvedStage)
+		_, _ = fmt.Fprintf(stderr, "error: invalid stage %q (must be INGRESS, EGRESS, or PUSH_EGRESS)\n", resolvedStage)
 		return 2
 	}
 

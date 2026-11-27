@@ -192,7 +192,7 @@ func validateBundleStructure(b *Bundle) []ValidationError {
 			errs = append(errs, ValidationError{
 				RuleID:  r.ID,
 				Code:    "INVALID_RULE_STAGES",
-				Message: "rule must specify at least one stage (INGRESS or EGRESS)",
+				Message: "rule must specify at least one stage (INGRESS, EGRESS, or PUSH_EGRESS)",
 			})
 		} else {
 			seenStages := make(map[string]struct{}, len(r.Stages))
@@ -201,7 +201,7 @@ func validateBundleStructure(b *Bundle) []ValidationError {
 					errs = append(errs, ValidationError{
 						RuleID:  r.ID,
 						Code:    "INVALID_RULE_STAGES",
-						Message: fmt.Sprintf("unsupported rule stage %q (must be INGRESS or EGRESS)", st),
+						Message: fmt.Sprintf("unsupported rule stage %q (must be INGRESS, EGRESS, or PUSH_EGRESS)", st),
 					})
 				} else if _, dup := seenStages[st]; dup {
 					errs = append(errs, ValidationError{

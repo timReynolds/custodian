@@ -27,7 +27,9 @@ func TestPublisherDependencyIsolation(t *testing.T) {
 		"github.com/timreynolds/custodian/internal/policy",
 		"github.com/timreynolds/custodian/internal/git/reconstruct",
 		"github.com/timreynolds/custodian/internal/git/checkout",
+		"github.com/timreynolds/custodian/internal/gitgateway",
 		"github.com/google/cel-go",
+		"golang.org/x/crypto/ssh",
 	}
 	forbiddenExact := "github.com/timreynolds/custodian/internal/github"
 

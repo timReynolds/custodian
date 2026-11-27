@@ -341,7 +341,7 @@ func setupPGFixture(t *testing.T, classification domain.Classification, allowedR
 		t.Fatalf("CreateRepository: %v", err)
 	}
 
-	// Sync policies/defaults/default.yaml so ORG policy bundle is active.
+	// Sync policies/defaults/ so default ORG policy bundles are active.
 	policyEngine, err := policy.NewEngine()
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -354,6 +354,16 @@ func setupPGFixture(t *testing.T, classification domain.Classification, allowedR
 	if err != nil || len(orgBundles) == 0 {
 		t.Fatalf("ListActivePolicyBundlesByScope: %v (len=%d)", err, len(orgBundles))
 	}
+	var defaultPolicyID uuid.UUID
+	for _, b := range orgBundles {
+		if b.Name == "engineering-default" {
+			defaultPolicyID = b.ID
+			break
+		}
+	}
+	if defaultPolicyID == uuid.Nil {
+		t.Fatalf("expected active ORG bundle %q after SyncPolicyDir, got %+v", "engineering-default", orgBundles)
+	}
 
 	return &pgTestFixture{
 		pg:       pg,
@@ -363,7 +373,7 @@ func setupPGFixture(t *testing.T, classification domain.Classification, allowedR
 		repo:     repoRow,
 		bareRepo: bareRepo,
 		owner:    ownerRow,
-		policyID: orgBundles[0].ID,
+		policyID: defaultPolicyID,
 	}
 }
 

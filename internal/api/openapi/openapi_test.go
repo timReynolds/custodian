@@ -35,7 +35,7 @@ func TestOpenAPI31Spec_ValidatesOffline(t *testing.T) {
 	}
 }
 
-func TestOpenAPI31Spec_All16RoutesAndIdempotencyKeys(t *testing.T) {
+func TestOpenAPI31Spec_All22Paths23OperationsAndIdempotencyKeys(t *testing.T) {
 	_, v3Model, err := LoadDocument()
 	if err != nil {
 		t.Fatalf("LoadDocument failed: %v", err)
@@ -64,13 +64,32 @@ func TestOpenAPI31Spec_All16RoutesAndIdempotencyKeys(t *testing.T) {
 		{path: "/v1/policies/evaluate", method: http.MethodPost, optionalIdemp: true},
 		{path: "/v1/operations/{id}", method: http.MethodGet},
 		{path: "/v1/audit/events", method: http.MethodGet},
+		{path: "/v1/pushes", method: http.MethodGet},
+		{path: "/v1/pushes/{id}", method: http.MethodGet},
+		{path: "/v1/pushes/{id}/approvals", method: http.MethodPost, requireIdempotency: true},
+		{path: "/v1/repositories/{id}/egress-mode", method: http.MethodPut, requireIdempotency: true},
+		{path: "/v1/ip-corpora", method: http.MethodGet},
+		{path: "/v1/ip-corpora", method: http.MethodPost, requireIdempotency: true},
+		{path: "/v1/ip-corpora/{id}/reindex", method: http.MethodPost, requireIdempotency: true},
 	}
 
 	if v3Model.Model.Paths == nil || v3Model.Model.Paths.PathItems == nil {
 		t.Fatal("OpenAPI paths missing")
 	}
-	if gotCount := v3Model.Model.Paths.PathItems.Len(); gotCount != len(expected) {
-		t.Fatalf("expected %d paths, got %d", len(expected), gotCount)
+	uniquePaths := make(map[string]struct{}, len(expected))
+	for _, tc := range expected {
+		uniquePaths[tc.path] = struct{}{}
+	}
+	if gotCount := v3Model.Model.Paths.PathItems.Len(); gotCount != len(uniquePaths) {
+		t.Fatalf("expected %d unique paths, got %d", len(uniquePaths), gotCount)
+	}
+
+	totalOps := 0
+	for _, item := range v3Model.Model.Paths.PathItems.FromOldest() {
+		totalOps += item.GetOperations().Len()
+	}
+	if totalOps != len(expected) {
+		t.Fatalf("expected %d operations, got %d", len(expected), totalOps)
 	}
 
 	for _, tc := range expected {
@@ -218,6 +237,72 @@ func TestOpenAPI31Spec_HTTPRequestAndResponseValidation(t *testing.T) {
 	ok, valErrs = v.ValidateHttpResponse(appReqForErr, errResp)
 	if !ok || len(valErrs) > 0 {
 		t.Fatalf("valid 403 ErrorResponse rejected: %+v", valErrs)
+	}
+
+	// Valid POST /v1/policies/evaluate with PUSH_EGRESS stage
+	simPushReq := httptest.NewRequest(http.MethodPost, "/v1/policies/evaluate", strings.NewReader(`{"stage":"PUSH_EGRESS","input":{"push":{"has_lfs":true}}}`))
+	simPushReq.Header.Set("Content-Type", "application/json")
+	simPushReq.Header.Set("Authorization", "Bearer test-token")
+	ok, valErrs = v.ValidateHttpRequestSync(simPushReq)
+	if !ok || len(valErrs) > 0 {
+		t.Fatalf("valid POST /v1/policies/evaluate (PUSH_EGRESS) rejected: %+v", valErrs)
+	}
+
+	// Valid POST /v1/pushes/{id}/approvals + missing Idempotency-Key + unknown field rejection
+	pushID := uuid.Must(uuid.NewV7())
+	pushAppBody := `{"decision":"APPROVE","push_manifest_digest":"` + strings.Repeat("b", 64) + `","ttl_seconds":900}`
+	pushAppReq := httptest.NewRequest(http.MethodPost, "/v1/pushes/"+pushID.String()+"/approvals", strings.NewReader(pushAppBody))
+	pushAppReq.Header.Set("Content-Type", "application/json")
+	pushAppReq.Header.Set("Authorization", "Bearer test-token")
+	pushAppReq.Header.Set("Idempotency-Key", "idem-push-app-1")
+	ok, valErrs = v.ValidateHttpRequestSync(pushAppReq)
+	if !ok || len(valErrs) > 0 {
+		t.Fatalf("valid POST /v1/pushes/{id}/approvals rejected: %+v", valErrs)
+	}
+
+	pushAppNoIdem := httptest.NewRequest(http.MethodPost, "/v1/pushes/"+pushID.String()+"/approvals", strings.NewReader(pushAppBody))
+	pushAppNoIdem.Header.Set("Content-Type", "application/json")
+	pushAppNoIdem.Header.Set("Authorization", "Bearer test-token")
+	if ok, _ := v.ValidateHttpRequestSync(pushAppNoIdem); ok {
+		t.Fatal("POST /v1/pushes/{id}/approvals without Idempotency-Key must fail validation")
+	}
+
+	pushAppRogue := httptest.NewRequest(http.MethodPost, "/v1/pushes/"+pushID.String()+"/approvals", strings.NewReader(`{"decision":"APPROVE","push_manifest_digest":"`+strings.Repeat("b", 64)+`","rogue":true}`))
+	pushAppRogue.Header.Set("Content-Type", "application/json")
+	pushAppRogue.Header.Set("Authorization", "Bearer test-token")
+	pushAppRogue.Header.Set("Idempotency-Key", "idem-push-app-rogue")
+	if ok, _ := v.ValidateHttpRequestSync(pushAppRogue); ok {
+		t.Fatal("unknown field in POST /v1/pushes/{id}/approvals must fail validation")
+	}
+
+	// Valid PUT /v1/repositories/{id}/egress-mode + unknown field rejection
+	egressReq := httptest.NewRequest(http.MethodPut, "/v1/repositories/"+repoID.String()+"/egress-mode", strings.NewReader(`{"egress_mode":"ENFORCE_BLOCK","passive_audit_delivery":"INLINE_WARN"}`))
+	egressReq.Header.Set("Content-Type", "application/json")
+	egressReq.Header.Set("Authorization", "Bearer test-token")
+	egressReq.Header.Set("Idempotency-Key", "idem-repo-egress-1")
+	ok, valErrs = v.ValidateHttpRequestSync(egressReq)
+	if !ok || len(valErrs) > 0 {
+		t.Fatalf("valid PUT /v1/repositories/{id}/egress-mode rejected: %+v", valErrs)
+	}
+
+	// Valid POST /v1/ip-corpora + POST /v1/ip-corpora/{id}/reindex
+	corpusID := uuid.Must(uuid.NewV7())
+	createCorpusReq := httptest.NewRequest(http.MethodPost, "/v1/ip-corpora", strings.NewReader(`{"name":"core-ip","classification":"RESTRICTED","source_ref":"git://internal/core"}`))
+	createCorpusReq.Header.Set("Content-Type", "application/json")
+	createCorpusReq.Header.Set("Authorization", "Bearer test-token")
+	createCorpusReq.Header.Set("Idempotency-Key", "idem-corpus-1")
+	ok, valErrs = v.ValidateHttpRequestSync(createCorpusReq)
+	if !ok || len(valErrs) > 0 {
+		t.Fatalf("valid POST /v1/ip-corpora rejected: %+v", valErrs)
+	}
+
+	reindexReq := httptest.NewRequest(http.MethodPost, "/v1/ip-corpora/"+corpusID.String()+"/reindex", strings.NewReader(`{"force":true}`))
+	reindexReq.Header.Set("Content-Type", "application/json")
+	reindexReq.Header.Set("Authorization", "Bearer test-token")
+	reindexReq.Header.Set("Idempotency-Key", "idem-reindex-1")
+	ok, valErrs = v.ValidateHttpRequestSync(reindexReq)
+	if !ok || len(valErrs) > 0 {
+		t.Fatalf("valid POST /v1/ip-corpora/{id}/reindex rejected: %+v", valErrs)
 	}
 }
 

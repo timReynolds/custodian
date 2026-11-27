@@ -85,7 +85,7 @@ func (s *server) handleEvaluatePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !policy.IsValidStage(req.Stage) {
-		writeError(w, r, s.deps.Logger, domain.BadRequest("INVALID_POLICY_STAGE", "stage must be INGRESS or EGRESS"))
+		writeError(w, r, s.deps.Logger, domain.BadRequest("INVALID_POLICY_STAGE", "stage must be INGRESS, EGRESS, or PUSH_EGRESS"))
 		return
 	}
 	if req.Input == nil {

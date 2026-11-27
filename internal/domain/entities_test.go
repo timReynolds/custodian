@@ -53,8 +53,45 @@ func TestEnumsIsValid(t *testing.T) {
 	if !WorkspaceStatusReady.IsValid() || WorkspaceStatus("UNKNOWN").IsValid() || !WorkspaceStatusClosed.IsTerminal() || WorkspaceStatusReady.IsTerminal() {
 		t.Fatal("WorkspaceStatus methods failed")
 	}
-	if !ArtifactKindWorkspaceSource.IsValid() || !ArtifactKindPublicationManifest.IsValid() || ArtifactKind("BOGUS").IsValid() {
+	if !ArtifactKindWorkspaceSource.IsValid() || !ArtifactKindPublicationManifest.IsValid() || !ArtifactKindGitPushBundle.IsValid() || ArtifactKind("BOGUS").IsValid() {
 		t.Fatal("ArtifactKind.IsValid failed")
+	}
+	if !PolicyStageIngress.IsValid() || !PolicyStageEgress.IsValid() || !PolicyStagePushEgress.IsValid() || PolicyStage("BOGUS").IsValid() {
+		t.Fatal("PolicyStage.IsValid failed")
+	}
+	if !EgressModePassiveAudit.IsValid() || !EgressModeEnforceBlock.IsValid() || !EgressModeEnforcePR.IsValid() || EgressMode("BOGUS").IsValid() {
+		t.Fatal("EgressMode.IsValid failed")
+	}
+	if !PassiveAuditDeliveryAsync.IsValid() || !PassiveAuditDeliveryInlineWarn.IsValid() || PassiveAuditDelivery("BOGUS").IsValid() {
+		t.Fatal("PassiveAuditDelivery.IsValid failed")
+	}
+	if !PushTransportHTTPS.IsValid() || !PushTransportSSH.IsValid() || PushTransport("FTP").IsValid() {
+		t.Fatal("PushTransport.IsValid failed")
+	}
+	for _, st := range []PushSessionStatus{
+		PushSessionStatusReceived, PushSessionStatusUnpacking, PushSessionStatusQuarantined,
+		PushSessionStatusInspecting, PushSessionStatusEvaluating, PushSessionStatusAllowed,
+		PushSessionStatusBlocked, PushSessionStatusApprovalRequired, PushSessionStatusForwarding,
+		PushSessionStatusCompleted, PushSessionStatusObservedWouldBlock, PushSessionStatusFailed,
+	} {
+		if !st.IsValid() {
+			t.Fatalf("expected PushSessionStatus %s to be valid", st)
+		}
+	}
+	if PushSessionStatus("BOGUS").IsValid() {
+		t.Fatal("bogus PushSessionStatus should be invalid")
+	}
+	if !PushSessionStatusCompleted.IsTerminal() || !PushSessionStatusBlocked.IsTerminal() || !PushSessionStatusQuarantined.IsTerminal() || !PushSessionStatusObservedWouldBlock.IsTerminal() || !PushSessionStatusFailed.IsTerminal() {
+		t.Fatal("expected terminal PushSessionStatus values")
+	}
+	if PushSessionStatusReceived.IsTerminal() || PushSessionStatusForwarding.IsTerminal() || PushSessionStatusApprovalRequired.IsTerminal() {
+		t.Fatal("expected non-terminal PushSessionStatus values")
+	}
+	if !IPCorpusStatusPending.IsValid() || !IPCorpusStatusIndexing.IsValid() || !IPCorpusStatusReady.IsValid() || !IPCorpusStatusFailed.IsValid() || IPCorpusStatus("BOGUS").IsValid() {
+		t.Fatal("IPCorpusStatus.IsValid failed")
+	}
+	if !FingerprintLayerL1ExactChunk.IsValid() || !FingerprintLayerL2WinnowKGram.IsValid() || !FingerprintLayerL3HeaderMarker.IsValid() || FingerprintLayer("L9").IsValid() {
+		t.Fatal("FingerprintLayer.IsValid failed")
 	}
 	if !ProposalStatusPendingApproval.CanApprove() || ProposalStatusApproved.CanApprove() {
 		t.Fatal("ProposalStatus.CanApprove failed")
@@ -71,13 +108,13 @@ func TestEnumsIsValid(t *testing.T) {
 	if !ScanStatusCompleted.IsValid() || ScanStatus("BOGUS").IsValid() {
 		t.Fatal("ScanStatus.IsValid failed")
 	}
-	if !AssessmentStatusComplete.IsValid() || AssessmentStatus("BOGUS").IsValid() {
+	if !AssessmentStatusComplete.IsValid() || !AssessmentStatusNotRequired.IsValid() || AssessmentStatus("BOGUS").IsValid() {
 		t.Fatal("AssessmentStatus.IsValid failed")
 	}
 	if !RiskLevelNone.IsValid() || RiskLevel("BOGUS").IsValid() {
 		t.Fatal("RiskLevel.IsValid failed")
 	}
-	if !DispositionClear.IsValid() || Disposition("BOGUS").IsValid() {
+	if !DispositionClear.IsValid() || !DispositionNotRequired.IsValid() || Disposition("BOGUS").IsValid() {
 		t.Fatal("Disposition.IsValid failed")
 	}
 	if !PolicyScopeOrg.IsValid() || !PolicyScopeRepo.IsValid() || PolicyScope("GLOBAL").IsValid() {
@@ -553,8 +590,33 @@ func TestModelAssessmentBlocksPublication(t *testing.T) {
 	if !(ModelAssessment{Status: AssessmentStatusComplete, Disposition: Disposition("BOGUS")}).BlocksPublication() {
 		t.Fatal("unknown disposition on COMPLETE assessment must fail closed and block publication")
 	}
-	if !Disposition("").BlocksPublication() || !Disposition("UNKNOWN").BlocksPublication() {
-		t.Fatal("invalid Disposition must fail closed in BlocksPublication")
+	if !Disposition("").BlocksPublication() || !Disposition("UNKNOWN").BlocksPublication() || !DispositionNotRequired.BlocksPublication() {
+		t.Fatal("invalid or NOT_REQUIRED Disposition must fail closed in BlocksPublication")
+	}
+	notReq := ModelAssessment{Status: AssessmentStatusNotRequired, Disposition: DispositionNotRequired}
+	if !notReq.BlocksPublication() {
+		t.Fatal("NOT_REQUIRED ModelAssessment must fail closed in v1.0 BlocksPublication()")
+	}
+	if !notReq.AllowsPushEgress() {
+		t.Fatal("NOT_REQUIRED ModelAssessment must permit PUSH_EGRESS via AllowsPushEgress()")
+	}
+	if notReq.BlocksStage(PolicyStagePushEgress) {
+		t.Fatal("NOT_REQUIRED ModelAssessment must not block PolicyStagePushEgress")
+	}
+	if !notReq.BlocksStage(PolicyStageEgress) {
+		t.Fatal("NOT_REQUIRED ModelAssessment must block PolicyStageEgress")
+	}
+	if (ModelAssessment{Status: AssessmentStatusNotRequired, Disposition: DispositionBlock}).AllowsPushEgress() {
+		t.Fatal("NOT_REQUIRED + BLOCK must not allow push egress")
+	}
+	if (ModelAssessment{Status: AssessmentStatusNotRequired, Disposition: DispositionIndeterminate}).AllowsPushEgress() {
+		t.Fatal("NOT_REQUIRED + INDETERMINATE must not allow push egress")
+	}
+	if !(ModelAssessment{Status: AssessmentStatusComplete, Disposition: DispositionClear}).AllowsPushEgress() {
+		t.Fatal("COMPLETE + CLEAR must allow push egress")
+	}
+	if (ModelAssessment{Status: AssessmentStatusFailed, Disposition: DispositionClear}).AllowsPushEgress() {
+		t.Fatal("FAILED assessment must not allow push egress")
 	}
 }
 
@@ -716,5 +778,171 @@ func TestPrincipalAndRepositoryHelpers(t *testing.T) {
 	}
 	if _, _, err := (Repository{FullName: "bad"}).OwnerRepo(); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("OwnerRepo(bad) expected ErrBadRequest, got %v", err)
+	}
+}
+
+func TestPushApprovalReleaseIsUsableFor(t *testing.T) {
+	now := time.Date(2026, 11, 23, 8, 0, 0, 0, time.UTC)
+	principalID := MustNewID()
+	reviewerID := MustNewID()
+	digest := strings.Repeat("a", 64)
+
+	valid := PushApprovalRelease{
+		ID:                 MustNewID(),
+		PrincipalID:        principalID,
+		ApprovedBy:         reviewerID,
+		Destination:        "github.com/acme/widget",
+		DestinationHost:    "github.com",
+		DestinationRepo:    "acme/widget",
+		PushManifestDigest: digest,
+		PushSessionID:      MustNewID(),
+		PolicyDecisionID:   MustNewID(),
+		ExpiresAt:          now.Add(15 * time.Minute),
+		CreatedAt:          now.Add(-time.Minute),
+	}
+	if err := valid.IsUsableFor(now, principalID, "GitHub.com", "acme/widget", "sha256:"+strings.ToUpper(digest)); err != nil {
+		t.Fatalf("expected valid approval release, got %v", err)
+	}
+
+	// Also works when only canonical Destination ("host/owner/repo") is populated (e.g. from DB row).
+	dbLoaded := valid
+	dbLoaded.DestinationHost = ""
+	dbLoaded.DestinationRepo = ""
+	if err := dbLoaded.IsUsableFor(now, principalID, "github.com", "acme/widget", digest); err != nil {
+		t.Fatalf("expected DB-loaded destination match, got %v", err)
+	}
+
+	revoked := valid
+	revokedAt := now.Add(-10 * time.Second)
+	revoked.RevokedAt = &revokedAt
+	if err := revoked.IsUsableFor(now, principalID, "github.com", "acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("revoked expected ErrForbidden, got %v", err)
+	}
+
+	consumed := valid
+	consumed.ConsumedAt = &revokedAt
+	if err := consumed.IsUsableFor(now, principalID, "github.com", "acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("consumed expected ErrForbidden, got %v", err)
+	}
+
+	expired := valid
+	if err := expired.IsUsableFor(valid.ExpiresAt, principalID, "github.com", "acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expired expected ErrForbidden, got %v", err)
+	}
+
+	wrongPrincipal := valid
+	if err := wrongPrincipal.IsUsableFor(now, MustNewID(), "github.com", "acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("wrong principal expected ErrForbidden, got %v", err)
+	}
+
+	selfApproved := valid
+	selfApproved.ApprovedBy = principalID
+	if err := selfApproved.IsUsableFor(now, principalID, "github.com", "acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("self-approval expected ErrForbidden, got %v", err)
+	}
+
+	if err := valid.IsUsableFor(now, principalID, "evil.com", "acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("wrong host expected ErrForbidden, got %v", err)
+	}
+	if err := valid.IsUsableFor(now, principalID, "github.com", "acme/other", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("wrong repo expected ErrForbidden, got %v", err)
+	}
+	if err := dbLoaded.IsUsableFor(now, principalID, "evil.com", "github.com/acme/widget", digest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("host/repo confusion expected ErrForbidden, got %v", err)
+	}
+	if err := valid.IsUsableFor(now, principalID, "github.com", "acme/widget", strings.Repeat("b", 64)); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("digest mismatch expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestIPFingerprintCorpusAndMetadataValidation(t *testing.T) {
+	if err := (IPFingerprintCorpus{Classification: ClassificationRestricted}).ValidateClassification(); err != nil {
+		t.Fatalf("RESTRICTED should be allowed: %v", err)
+	}
+	if err := (IPFingerprintCorpus{Classification: ClassificationConfidential}).ValidateClassification(); err != nil {
+		t.Fatalf("CONFIDENTIAL should be allowed: %v", err)
+	}
+	for _, cls := range []Classification{ClassificationPublic, ClassificationInternal, Classification("")} {
+		if err := (IPFingerprintCorpus{Classification: cls}).ValidateClassification(); !errors.Is(err, ErrUnprocessable) {
+			t.Fatalf("classification %q expected ErrUnprocessable, got %v", cls, err)
+		}
+	}
+
+	safeMeta := map[string]any{
+		"language":         "go",
+		"chunk_bytes":      4096,
+		"token_count":      42,
+		"source_ref":       "refs/heads/main",
+		"content_type":     "text/plain",
+		"redacted_preview": "sha256:abcd",
+		"raw_safe":         true,
+		"winnow_k":         25,
+		"nested":           map[string]string{"algorithm": "winnowing"},
+	}
+	if err := ValidateIPFingerprintMetadata(safeMeta); err != nil {
+		t.Fatalf("safe metadata unexpected err: %v", err)
+	}
+
+	forbiddenIPKeys := []string{
+		"raw_source", "RawSource", "rawSource", "raw-source", "raw source", "raw.source",
+		"raw_code", "RawCode", "rawCode", "raw-code",
+		"source_text", "SourceText", "sourceText", "source-text",
+		"content", "Content",
+		"snippet", "Snippet",
+		"raw_secret", "RawSecret", "rawSecret", "raw-secret",
+		"match_raw", "MatchRaw", "matchRaw",
+		"private_key", "PrivateKey", "privateKey",
+		"token", "Token",
+		"password", "Password",
+		"credential", "Credential",
+	}
+	for _, key := range forbiddenIPKeys {
+		meta := map[string]any{"nested": map[string]any{key: "secret-code"}}
+		if err := ValidateIPFingerprintMetadata(meta); !errors.Is(err, ErrUnprocessable) {
+			t.Fatalf("forbidden key %q expected ErrUnprocessable, got %v", key, err)
+		}
+	}
+
+	type untaggedIPMeta struct {
+		RawSource string
+	}
+	if err := ValidateIPFingerprintMetadata(map[string]any{
+		"struct": untaggedIPMeta{RawSource: "secret()"},
+	}); !errors.Is(err, ErrUnprocessable) {
+		t.Fatalf("untagged struct RawSource expected ErrUnprocessable, got %v", err)
+	}
+	if err := ValidateIPFingerprintMetadata(map[string]any{
+		"raw": json.RawMessage(`{"rawSource":"secret()"}`),
+	}); !errors.Is(err, ErrUnprocessable) {
+		t.Fatalf("json.RawMessage rawSource expected ErrUnprocessable, got %v", err)
+	}
+
+	type untaggedFindingMeta struct {
+		RawSecret string
+	}
+	for name, meta := range map[string]map[string]any{
+		"untagged_struct_RawSecret": {"s": untaggedFindingMeta{RawSecret: "ghp_123"}},
+		"camelCase_privateKey":      {"privateKey": "pem"},
+		"kebabCase_raw_secret":      {"raw-secret": "x"},
+		"raw_message_matchRaw":      {"payload": json.RawMessage(`{"matchRaw":"x"}`)},
+	} {
+		f := Finding{Category: "SECRET", Redacted: true, Metadata: meta}
+		if err := f.ValidateRedacted(); !errors.Is(err, ErrUnprocessable) {
+			t.Fatalf("%s expected ErrUnprocessable, got %v", name, err)
+		}
+	}
+
+	allowedFinding := Finding{
+		Category: "SECRET",
+		Redacted: true,
+		Metadata: map[string]any{
+			"token_count":      1,
+			"secret_detected":  true,
+			"redacted_preview": "AKIA***",
+			"source_ref":       "a.go",
+		},
+	}
+	if err := allowedFinding.ValidateRedacted(); err != nil {
+		t.Fatalf("legitimate finding metadata unexpected err: %v", err)
 	}
 }

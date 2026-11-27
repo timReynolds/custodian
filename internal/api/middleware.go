@@ -57,6 +57,38 @@ func canReadProposalByOwnerID(c identity.CallerContext, ownerID uuid.UUID) bool 
 	return c.IsHuman() && !c.IsAuditor() && !c.IsPolicyAdmin() && c.HasRole("reviewer")
 }
 
+func isPushAuditor(c identity.CallerContext) bool {
+	return c.IsAuditor() || (c.IsHuman() && c.InGroup("audit-readers"))
+}
+
+func isPushAdmin(c identity.CallerContext) bool {
+	if !c.IsHuman() || isPushAuditor(c) {
+		return false
+	}
+	return c.IsPolicyAdmin() ||
+		c.InGroup("security-admins") ||
+		c.InGroup("policy-admins") ||
+		c.HasRole("security_admin")
+}
+
+func isPushApprover(c identity.CallerContext) bool {
+	if !c.IsHuman() || isPushAuditor(c) {
+		return false
+	}
+	return c.IsPolicyAdmin() ||
+		c.InGroup("security-admins") ||
+		c.InGroup("policy-admins") ||
+		c.InGroup("ip-review") ||
+		c.InGroup("security-reviewers") ||
+		c.HasRole("reviewer") ||
+		c.HasRole("security_admin")
+}
+
+func canReadAllPushes(c identity.CallerContext) bool {
+	return c.IsController() || isPushAuditor(c) || isPushAdmin(c) ||
+		(c.IsHuman() && (c.InGroup("ip-review") || c.InGroup("security-reviewers") || c.HasRole("reviewer")))
+}
+
 func requireOIDCMiddleware(verifier auth.TokenVerifier, dir *identity.Directory, logger *slog.Logger, dbTimeout time.Duration) func(http.Handler) http.Handler {
 	if dbTimeout <= 0 {
 		dbTimeout = defaultDBTimeout

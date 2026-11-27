@@ -174,7 +174,7 @@ func (s *Service) executeIngress(ctx context.Context, op operations.OperationDet
 	if err != nil {
 		return IngressResult{}, err
 	}
-	inspCfg := composeInspectionConfigAll(orgBundles, repoBundles)
+	inspCfg := composeInspectionConfigForStage(policy.StageIngress, orgBundles, repoBundles)
 
 	releaseScan, err := s.budgets.AcquireScan(ctx)
 	if err != nil {

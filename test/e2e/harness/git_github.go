@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -576,6 +577,44 @@ type AuthChallenge struct {
 	StatusCode int
 }
 
+// ReceivePackCall records an incoming POST /{owner}/{repo}.git/git-receive-pack request.
+type ReceivePackCall struct {
+	Timestamp  time.Time
+	Repo       string
+	Bytes      int64
+	StatusCode int
+	HasToken   bool
+	Token      string
+}
+
+// UploadPackCall records an incoming POST /{owner}/{repo}.git/git-upload-pack request.
+type UploadPackCall struct {
+	Timestamp  time.Time
+	Repo       string
+	Bytes      int64
+	StatusCode int
+}
+
+// InfoRefsCall records an incoming GET /{owner}/{repo}.git/info/refs request.
+type InfoRefsCall struct {
+	Timestamp  time.Time
+	Repo       string
+	Service    string
+	StatusCode int
+	HasToken   bool
+}
+
+// LFSBatchCall records an incoming POST /{owner}/{repo}.git/info/lfs/objects/batch request.
+type LFSBatchCall struct {
+	Timestamp  time.Time
+	Repo       string
+	Operation  string
+	ObjectOIDs []string
+	Bytes      int64
+	StatusCode int
+	HasToken   bool
+}
+
 type outageRule struct {
 	methodPrefix string
 	pathContains string
@@ -595,12 +634,20 @@ type MockGitHub struct {
 	readKey    *rsa.PrivateKey
 	writeKey   *rsa.PrivateKey
 
-	mu         sync.Mutex
-	tokenSeq   atomic.Int64
-	prs        map[string][]PullRequest
-	pushes     []PushAttempt
-	challenges []AuthChallenge
-	outages    []outageRule
+	mu               sync.Mutex
+	tokenSeq         atomic.Int64
+	prs              map[string][]PullRequest
+	pushes           []PushAttempt
+	challenges       []AuthChallenge
+	outages          []outageRule
+	userTokens       map[string]bool
+	receivePackCalls []ReceivePackCall
+	receivePackBytes map[string]int64
+	uploadPackCalls  []UploadPackCall
+	infoRefsCalls    []InfoRefsCall
+	lfsBatchCalls    []LFSBatchCall
+	lfsUploadBytes   map[string]int64
+	lfsObjects       map[string]map[string][]byte
 }
 
 func generateTestRSAPEM() (string, error) {
@@ -710,15 +757,19 @@ func StartMockGitHub(t testing.TB, git *BareGitHelper, readAppID, writeAppID int
 	}
 
 	m := &MockGitHub{
-		t:          t,
-		git:        git,
-		readAppID:  readAppID,
-		writeAppID: writeAppID,
-		readPEM:    readPEM,
-		writePEM:   writePEM,
-		readKey:    readKey,
-		writeKey:   writeKey,
-		prs:        make(map[string][]PullRequest),
+		t:                t,
+		git:              git,
+		readAppID:        readAppID,
+		writeAppID:       writeAppID,
+		readPEM:          readPEM,
+		writePEM:         writePEM,
+		readKey:          readKey,
+		writeKey:         writeKey,
+		prs:              make(map[string][]PullRequest),
+		userTokens:       make(map[string]bool),
+		receivePackBytes: make(map[string]int64),
+		lfsUploadBytes:   make(map[string]int64),
+		lfsObjects:       make(map[string]map[string][]byte),
 	}
 
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(m.serveHTTP))
@@ -811,6 +862,102 @@ func (m *MockGitHub) AuthChallenges() []AuthChallenge {
 	return out
 }
 
+// RegisterUserToken registers an OAuth/PAT token for Smart-HTTP, LFS, and REST checks.
+func (m *MockGitHub) RegisterUserToken(token string, canWrite bool) {
+	if token == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.userTokens[token] = canWrite
+}
+
+// ReceivePackCalls returns a copy of all recorded POST /git-receive-pack calls.
+func (m *MockGitHub) ReceivePackCalls() []ReceivePackCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ReceivePackCall, len(m.receivePackCalls))
+	copy(out, m.receivePackCalls)
+	return out
+}
+
+// ReceivePackBytes returns total raw HTTP bytes received on POST /git-receive-pack for repo
+// (or across all repositories if repo == "").
+func (m *MockGitHub) ReceivePackBytes(repo string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if repo != "" {
+		return m.receivePackBytes[repo]
+	}
+	var total int64
+	for _, n := range m.receivePackBytes {
+		total += n
+	}
+	return total
+}
+
+// UploadPackCalls returns a copy of all recorded POST /git-upload-pack calls.
+func (m *MockGitHub) UploadPackCalls() []UploadPackCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]UploadPackCall, len(m.uploadPackCalls))
+	copy(out, m.uploadPackCalls)
+	return out
+}
+
+// InfoRefsCalls returns a copy of all recorded GET /info/refs calls.
+func (m *MockGitHub) InfoRefsCalls() []InfoRefsCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]InfoRefsCall, len(m.infoRefsCalls))
+	copy(out, m.infoRefsCalls)
+	return out
+}
+
+// LFSBatchCalls returns a copy of all recorded POST /info/lfs/objects/batch calls.
+func (m *MockGitHub) LFSBatchCalls() []LFSBatchCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]LFSBatchCall, len(m.lfsBatchCalls))
+	for i, c := range m.lfsBatchCalls {
+		cp := c
+		if len(c.ObjectOIDs) > 0 {
+			cp.ObjectOIDs = append([]string(nil), c.ObjectOIDs...)
+		}
+		out[i] = cp
+	}
+	return out
+}
+
+// LFSUploadBytes returns total raw bytes uploaded via PUT /info/lfs/objects/{oid} for repo
+// (or across all repositories if repo == "").
+func (m *MockGitHub) LFSUploadBytes(repo string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if repo != "" {
+		return m.lfsUploadBytes[repo]
+	}
+	var total int64
+	for _, n := range m.lfsUploadBytes {
+		total += n
+	}
+	return total
+}
+
+// ResetPacketCounters clears recorded push attempts, Smart-HTTP, and LFS packet/byte
+// counters while preserving registered tokens, stored LFS objects, PRs, and outage rules.
+func (m *MockGitHub) ResetPacketCounters() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pushes = nil
+	m.receivePackCalls = nil
+	m.receivePackBytes = make(map[string]int64)
+	m.uploadPackCalls = nil
+	m.infoRefsCalls = nil
+	m.lfsBatchCalls = nil
+	m.lfsUploadBytes = make(map[string]int64)
+}
+
 func (m *MockGitHub) checkOutage(method, path string) (int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -844,12 +991,24 @@ func extractGitHubToken(r *http.Request) string {
 	return ""
 }
 
-func isReadOnlyToken(tok string) bool {
-	return strings.HasPrefix(tok, "ghs_read_")
+func (m *MockGitHub) isReadOnlyToken(tok string) bool {
+	if strings.HasPrefix(tok, "ghs_read_") {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	canWrite, ok := m.userTokens[tok]
+	return ok && !canWrite
 }
 
-func isWriteToken(tok string) bool {
-	return strings.HasPrefix(tok, "ghs_write_")
+func (m *MockGitHub) isWriteToken(tok string) bool {
+	if strings.HasPrefix(tok, "ghs_write_") {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	canWrite, ok := m.userTokens[tok]
+	return ok && canWrite
 }
 
 func (m *MockGitHub) recordPush(p PushAttempt) {
@@ -867,6 +1026,23 @@ func (m *MockGitHub) recordAuthChallenge(c AuthChallenge) {
 func (m *MockGitHub) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	if status, hit := m.checkOutage(r.Method, path); hit {
+		if idx := strings.Index(path, ".git/git-receive-pack"); idx >= 0 && r.Method == http.MethodPost {
+			fullName := strings.TrimPrefix(path[:idx], "/")
+			rawBody, _ := io.ReadAll(r.Body)
+			wireLen := int64(len(rawBody))
+			tok := extractGitHubToken(r)
+			m.mu.Lock()
+			m.receivePackBytes[fullName] += wireLen
+			m.receivePackCalls = append(m.receivePackCalls, ReceivePackCall{
+				Timestamp:  time.Now().UTC(),
+				Repo:       fullName,
+				Bytes:      wireLen,
+				StatusCode: status,
+				HasToken:   tok != "",
+				Token:      tok,
+			})
+			m.mu.Unlock()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "simulated github outage"})
@@ -1220,7 +1396,7 @@ func (m *MockGitHub) handleRepoAPI(w http.ResponseWriter, r *http.Request, repo 
 			http.Error(w, `{"message":"Requires authentication"}`, http.StatusUnauthorized)
 			return
 		}
-		if !isWriteToken(tok) {
+		if !m.isWriteToken(tok) {
 			m.recordPush(PushAttempt{Timestamp: time.Now().UTC(), Repo: repo.FullName, Token: tok, Allowed: false, Stage: "rest_ref_403"})
 			http.Error(w, `{"message":"Resource not accessible by integration (write token required)"}`, http.StatusForbidden)
 			return
@@ -1379,7 +1555,7 @@ func (m *MockGitHub) handleRepoAPI(w http.ResponseWriter, r *http.Request, repo 
 				http.Error(w, `{"message":"Requires authentication"}`, http.StatusUnauthorized)
 				return
 			}
-			if !isWriteToken(tok) {
+			if !m.isWriteToken(tok) {
 				http.Error(w, `{"message":"Resource not accessible by integration (write token required)"}`, http.StatusForbidden)
 				return
 			}
@@ -1462,7 +1638,7 @@ func (m *MockGitHub) handleRepoAPI(w http.ResponseWriter, r *http.Request, repo 
 					http.Error(w, `{"message":"Requires authentication"}`, http.StatusUnauthorized)
 					return
 				}
-				if !isWriteToken(tok) {
+				if !m.isWriteToken(tok) {
 					m.mu.Unlock()
 					http.Error(w, `{"message":"Resource not accessible by integration (write token required)"}`, http.StatusForbidden)
 					return
@@ -1720,8 +1896,21 @@ func (m *MockGitHub) handleSmartHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch suffix {
 	case "/info/refs":
+		status := http.StatusOK
+		defer func() {
+			m.mu.Lock()
+			m.infoRefsCalls = append(m.infoRefsCalls, InfoRefsCall{
+				Timestamp:  time.Now().UTC(),
+				Repo:       fullName,
+				Service:    service,
+				StatusCode: status,
+				HasToken:   tok != "",
+			})
+			m.mu.Unlock()
+		}()
 		if service == "git-receive-pack" {
 			if tok == "" {
+				status = http.StatusUnauthorized
 				m.recordAuthChallenge(AuthChallenge{
 					Timestamp:  time.Now().UTC(),
 					Method:     r.Method,
@@ -1734,19 +1923,22 @@ func (m *MockGitHub) handleSmartHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "unauthorized: authentication required to push", http.StatusUnauthorized)
 				return
 			}
-			if !isWriteToken(tok) {
+			if !m.isWriteToken(tok) {
+				status = http.StatusForbidden
 				m.recordPush(PushAttempt{Timestamp: time.Now().UTC(), Repo: fullName, Token: tok, Allowed: false, Stage: "info_refs_403"})
 				http.Error(w, "forbidden: write token required to push", http.StatusForbidden)
 				return
 			}
 		}
 		if service != "git-upload-pack" && service != "git-receive-pack" {
+			status = http.StatusBadRequest
 			http.Error(w, "unsupported service", http.StatusBadRequest)
 			return
 		}
 		cmdName := strings.TrimPrefix(service, "git-")
 		out, err := runHardenedGit("", nil, cmdName, "--stateless-rpc", "--advertise-refs", repo.BarePath)
 		if err != nil {
+			status = http.StatusInternalServerError
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1759,8 +1951,61 @@ func (m *MockGitHub) handleSmartHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case "/git-upload-pack", "/git-receive-pack":
 		svc := strings.TrimPrefix(suffix, "/")
+		rawBody, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			status := http.StatusBadRequest
+			if svc == "git-receive-pack" {
+				m.mu.Lock()
+				m.receivePackCalls = append(m.receivePackCalls, ReceivePackCall{
+					Timestamp:  time.Now().UTC(),
+					Repo:       fullName,
+					Bytes:      0,
+					StatusCode: status,
+					HasToken:   tok != "",
+					Token:      tok,
+				})
+				m.mu.Unlock()
+			} else {
+				m.mu.Lock()
+				m.uploadPackCalls = append(m.uploadPackCalls, UploadPackCall{
+					Timestamp:  time.Now().UTC(),
+					Repo:       fullName,
+					Bytes:      0,
+					StatusCode: status,
+				})
+				m.mu.Unlock()
+			}
+			http.Error(w, readErr.Error(), status)
+			return
+		}
+		wireLen := int64(len(rawBody))
+		status := http.StatusOK
+		defer func() {
+			m.mu.Lock()
+			if svc == "git-receive-pack" {
+				m.receivePackBytes[fullName] += wireLen
+				m.receivePackCalls = append(m.receivePackCalls, ReceivePackCall{
+					Timestamp:  time.Now().UTC(),
+					Repo:       fullName,
+					Bytes:      wireLen,
+					StatusCode: status,
+					HasToken:   tok != "",
+					Token:      tok,
+				})
+			} else {
+				m.uploadPackCalls = append(m.uploadPackCalls, UploadPackCall{
+					Timestamp:  time.Now().UTC(),
+					Repo:       fullName,
+					Bytes:      wireLen,
+					StatusCode: status,
+				})
+			}
+			m.mu.Unlock()
+		}()
+
 		if svc == "git-receive-pack" {
 			if tok == "" {
+				status = http.StatusUnauthorized
 				m.recordAuthChallenge(AuthChallenge{
 					Timestamp:  time.Now().UTC(),
 					Method:     r.Method,
@@ -1774,26 +2019,30 @@ func (m *MockGitHub) handleSmartHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "unauthorized: authentication required to push", http.StatusUnauthorized)
 				return
 			}
-			if !isWriteToken(tok) {
+			if !m.isWriteToken(tok) {
+				status = http.StatusForbidden
 				m.recordPush(PushAttempt{Timestamp: time.Now().UTC(), Repo: fullName, Token: tok, Allowed: false, Stage: "receive_pack_403"})
 				http.Error(w, "forbidden: write token required to push", http.StatusForbidden)
 				return
 			}
 		}
-		var bodyReader io.Reader = r.Body
+
+		reqBytes := rawBody
 		if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
-			gz, err := gzip.NewReader(r.Body)
+			gz, err := gzip.NewReader(bytes.NewReader(rawBody))
 			if err != nil {
+				status = http.StatusBadRequest
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			defer gz.Close()
-			bodyReader = gz
-		}
-		reqBytes, err := io.ReadAll(bodyReader)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+			decompressed, err := io.ReadAll(gz)
+			_ = gz.Close()
+			if err != nil {
+				status = http.StatusBadRequest
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			reqBytes = decompressed
 		}
 
 		cmdName := strings.TrimPrefix(svc, "git-")
@@ -1855,6 +2104,7 @@ func (m *MockGitHub) handleSmartHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if runErr != nil {
+			status = http.StatusInternalServerError
 			http.Error(w, fmt.Sprintf("git %s failed: %v\n%s", cmdName, runErr, errBuf.String()), http.StatusInternalServerError)
 			return
 		}
@@ -1862,7 +2112,236 @@ func (m *MockGitHub) handleSmartHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(outBuf.Bytes())
 
+	case "/info/lfs/objects/batch":
+		m.handleLFSBatch(w, r, fullName, tok)
+
 	default:
+		if strings.HasPrefix(suffix, "/info/lfs/objects/") {
+			m.handleLFSObject(w, r, fullName, strings.TrimPrefix(suffix, "/info/lfs/objects/"), tok)
+			return
+		}
 		http.NotFound(w, r)
 	}
+}
+
+func (m *MockGitHub) handleLFSBatch(w http.ResponseWriter, r *http.Request, fullName, tok string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Operation string   `json:"operation"`
+		Transfers []string `json:"transfers"`
+		Objects   []struct {
+			OID  string `json:"oid"`
+			Size int64  `json:"size"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		m.mu.Lock()
+		m.lfsBatchCalls = append(m.lfsBatchCalls, LFSBatchCall{
+			Timestamp:  time.Now().UTC(),
+			Repo:       fullName,
+			Bytes:      int64(len(rawBody)),
+			StatusCode: http.StatusBadRequest,
+			HasToken:   tok != "",
+		})
+		m.mu.Unlock()
+		http.Error(w, `{"message":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	oids := make([]string, 0, len(req.Objects))
+	for _, o := range req.Objects {
+		oids = append(oids, o.OID)
+	}
+	status := http.StatusOK
+	defer func() {
+		m.mu.Lock()
+		m.lfsBatchCalls = append(m.lfsBatchCalls, LFSBatchCall{
+			Timestamp:  time.Now().UTC(),
+			Repo:       fullName,
+			Operation:  req.Operation,
+			ObjectOIDs: oids,
+			Bytes:      int64(len(rawBody)),
+			StatusCode: status,
+			HasToken:   tok != "",
+		})
+		m.mu.Unlock()
+	}()
+
+	switch req.Operation {
+	case "upload":
+		if tok == "" {
+			status = http.StatusUnauthorized
+			w.Header().Set("WWW-Authenticate", `Basic realm="MockGitHub"`)
+			http.Error(w, `{"message":"authentication required"}`, http.StatusUnauthorized)
+			return
+		}
+		if !m.isWriteToken(tok) {
+			status = http.StatusForbidden
+			http.Error(w, `{"message":"write token required for LFS upload"}`, http.StatusForbidden)
+			return
+		}
+	case "download":
+		if tok != "" && !m.isWriteToken(tok) && !m.isReadOnlyToken(tok) {
+			status = http.StatusForbidden
+			http.Error(w, `{"message":"invalid token"}`, http.StatusForbidden)
+			return
+		}
+	default:
+		status = http.StatusUnprocessableEntity
+		http.Error(w, `{"message":"unsupported LFS operation"}`, http.StatusUnprocessableEntity)
+		return
+	}
+
+	type lfsAction struct {
+		Href   string            `json:"href"`
+		Header map[string]string `json:"header,omitempty"`
+	}
+	type lfsObjError struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	type lfsRespObj struct {
+		OID           string               `json:"oid"`
+		Size          int64                `json:"size"`
+		Authenticated bool                 `json:"authenticated,omitempty"`
+		Actions       map[string]lfsAction `json:"actions,omitempty"`
+		Error         *lfsObjError         `json:"error,omitempty"`
+	}
+
+	m.mu.Lock()
+	repoObjs := m.lfsObjects[fullName]
+	respObjs := make([]lfsRespObj, 0, len(req.Objects))
+	for _, o := range req.Objects {
+		item := lfsRespObj{
+			OID:  o.OID,
+			Size: o.Size,
+		}
+		var headers map[string]string
+		if tok != "" {
+			headers = map[string]string{"Authorization": "Bearer " + tok}
+		}
+		href := fmt.Sprintf("%s/%s.git/info/lfs/objects/%s", m.server.URL, fullName, o.OID)
+		lookupOID := normalizeLFSOID(o.OID)
+		if req.Operation == "upload" {
+			if _, exists := repoObjs[lookupOID]; !exists {
+				item.Authenticated = true
+				item.Actions = map[string]lfsAction{
+					"upload": {Href: href, Header: headers},
+				}
+			} else {
+				item.Authenticated = true
+			}
+		} else {
+			if data, exists := repoObjs[lookupOID]; exists {
+				item.Authenticated = true
+				if item.Size == 0 {
+					item.Size = int64(len(data))
+				}
+				item.Actions = map[string]lfsAction{
+					"download": {Href: href, Header: headers},
+				}
+			} else {
+				item.Error = &lfsObjError{Code: 404, Message: "Object does not exist"}
+			}
+		}
+		respObjs = append(respObjs, item)
+	}
+	m.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/vnd.git-lfs+json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"transfer": "basic",
+		"objects":  respObjs,
+	})
+}
+
+func normalizeLFSOID(oid string) string {
+	if isHexSHA256(oid) {
+		return strings.ToLower(oid)
+	}
+	return oid
+}
+
+func (m *MockGitHub) handleLFSObject(w http.ResponseWriter, r *http.Request, fullName, oid, tok string) {
+	if oid == "" || oid == "." || strings.Contains(oid, "/") || strings.Contains(oid, "..") {
+		http.Error(w, `{"message":"invalid object oid"}`, http.StatusBadRequest)
+		return
+	}
+	oid = normalizeLFSOID(oid)
+	switch r.Method {
+	case http.MethodPut:
+		if tok == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="MockGitHub"`)
+			http.Error(w, `{"message":"authentication required"}`, http.StatusUnauthorized)
+			return
+		}
+		if !m.isWriteToken(tok) {
+			http.Error(w, `{"message":"write token required for LFS object PUT"}`, http.StatusForbidden)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if isHexSHA256(oid) {
+			sum := sha256.Sum256(body)
+			if hex.EncodeToString(sum[:]) != oid {
+				http.Error(w, `{"message":"oid sha256 mismatch"}`, http.StatusUnprocessableEntity)
+				return
+			}
+		}
+		m.mu.Lock()
+		if m.lfsObjects[fullName] == nil {
+			m.lfsObjects[fullName] = make(map[string][]byte)
+		}
+		m.lfsObjects[fullName][oid] = body
+		m.lfsUploadBytes[fullName] += int64(len(body))
+		m.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+
+	case http.MethodGet:
+		if tok != "" && !m.isWriteToken(tok) && !m.isReadOnlyToken(tok) {
+			http.Error(w, `{"message":"invalid token"}`, http.StatusForbidden)
+			return
+		}
+		m.mu.Lock()
+		var data []byte
+		var exists bool
+		if m.lfsObjects[fullName] != nil {
+			data, exists = m.lfsObjects[fullName][oid]
+		}
+		m.mu.Unlock()
+		if !exists {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func isHexSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

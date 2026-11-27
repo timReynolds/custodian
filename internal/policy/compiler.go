@@ -74,6 +74,8 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 			reflect.TypeOf(ProposalInput{}),
 			reflect.TypeOf(PrincipalInput{}),
 			reflect.TypeOf(ProvenanceInput{}),
+			reflect.TypeOf(DestinationInput{}),
+			reflect.TypeOf(PushInput{}),
 		),
 		ext.Strings(),
 		ext.Lists(),
@@ -93,6 +95,8 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		cel.Variable("proposal", cel.ObjectType("policy.ProposalInput")),
 		cel.Variable("principal", cel.ObjectType("policy.PrincipalInput")),
 		cel.Variable("provenance", cel.ObjectType("policy.ProvenanceInput")),
+		cel.Variable("destination", cel.ObjectType("policy.DestinationInput")),
+		cel.Variable("push", cel.ObjectType("policy.PushInput")),
 		cel.Variable("flags", cel.MapType(cel.StringType, cel.BoolType)),
 	)
 	if err != nil {

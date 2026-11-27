@@ -195,7 +195,7 @@ func (s *Service) ExecuteEvaluate(ctx context.Context, op operations.OperationDe
 	if err != nil {
 		return EvaluateResult{}, err
 	}
-	inspCfg := composeInspectionConfigAll(orgBundles, repoBundles)
+	inspCfg := composeInspectionConfigForStage(policy.StageEgress, orgBundles, repoBundles)
 
 	// Stage A: Deterministic scanners + persistence of scan_runs & redacted findings.
 	if err := s.verifyOperationLease(ctx); err != nil {

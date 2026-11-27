@@ -125,7 +125,29 @@ func (s *Service) resolveActivePolicyBundles(ctx context.Context, repositoryID u
 	return orgBundles, repoBundles, nil
 }
 
-func composeInspectionConfigAll(orgBundles, repoBundles []persistedCompiledBundle) policy.InspectionConfig {
+func bundleAppliesToStage(b *policy.CompiledBundle, stage string) bool {
+	if b == nil {
+		return false
+	}
+	for _, r := range b.Rules {
+		if r.Spec.AppliesToStage(stage) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterBundlesForStage(bundles []persistedCompiledBundle, stage string) []persistedCompiledBundle {
+	out := make([]persistedCompiledBundle, 0, len(bundles))
+	for _, b := range bundles {
+		if bundleAppliesToStage(b.compiled, stage) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func composeInspectionConfigForStage(stage string, orgBundles, repoBundles []persistedCompiledBundle) policy.InspectionConfig {
 	out := policy.InspectionConfig{
 		Mandatory: []string{},
 	}
@@ -134,9 +156,12 @@ func composeInspectionConfigAll(orgBundles, repoBundles []persistedCompiledBundl
 	var route string
 	var triggers []string
 
-	ordered := make([]persistedCompiledBundle, 0, len(orgBundles)+len(repoBundles))
-	ordered = append(ordered, orgBundles...)
-	ordered = append(ordered, repoBundles...)
+	stageOrg := filterBundlesForStage(orgBundles, stage)
+	stageRepo := filterBundlesForStage(repoBundles, stage)
+
+	ordered := make([]persistedCompiledBundle, 0, len(stageOrg)+len(stageRepo))
+	ordered = append(ordered, stageOrg...)
+	ordered = append(ordered, stageRepo...)
 
 	for _, entry := range ordered {
 		b := entry.compiled
@@ -194,8 +219,14 @@ func resolveEvaluationModelRoute(
 	if explicit := strings.TrimSpace(workspaceRoute); explicit != "" {
 		return explicit
 	}
-	orgRoute := firstConfiguredModelRoute(orgBundles)
-	repoRoute := firstAuthorizedModelRoute(repoBundles, allowedRepoRoutes)
+	stageOrg := filterBundlesForStage(orgBundles, policy.StageEgress)
+	stageRepo := filterBundlesForStage(repoBundles, policy.StageEgress)
+	if len(stageOrg) == 0 && len(stageRepo) == 0 {
+		stageOrg = orgBundles
+		stageRepo = repoBundles
+	}
+	orgRoute := firstConfiguredModelRoute(stageOrg)
+	repoRoute := firstAuthorizedModelRoute(stageRepo, allowedRepoRoutes)
 	if orgRoute != "" {
 		if len(allowedRepoRoutes) == 0 || slices.Contains(allowedRepoRoutes, orgRoute) {
 			return orgRoute
@@ -260,6 +291,13 @@ func (s *Service) evaluateComposedBundles(
 	if len(orgBundles) == 0 && len(repoBundles) == 0 {
 		res, err := s.policyEngine.Evaluate(ctx, nil, stage, input)
 		return composedEvalOutcome{result: res}, err
+	}
+
+	stageOrg := filterBundlesForStage(orgBundles, stage)
+	stageRepo := filterBundlesForStage(repoBundles, stage)
+	if len(stageOrg) > 0 || len(stageRepo) > 0 {
+		orgBundles = stageOrg
+		repoBundles = stageRepo
 	}
 
 	if len(orgBundles) == 1 && len(repoBundles) <= 1 {

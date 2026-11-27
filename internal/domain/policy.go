@@ -23,6 +23,23 @@ func (s PolicyScope) IsValid() bool {
 	}
 }
 
+type PolicyStage string
+
+const (
+	PolicyStageIngress    PolicyStage = "INGRESS"
+	PolicyStageEgress     PolicyStage = "EGRESS"
+	PolicyStagePushEgress PolicyStage = "PUSH_EGRESS"
+)
+
+func (s PolicyStage) IsValid() bool {
+	switch s {
+	case PolicyStageIngress, PolicyStageEgress, PolicyStagePushEgress:
+		return true
+	default:
+		return false
+	}
+}
+
 type PolicyEffect string
 
 const (
@@ -107,7 +124,10 @@ type PolicyBundle struct {
 type PolicyDecision struct {
 	ID             uuid.UUID      `json:"id"`
 	ProposalID     uuid.UUID      `json:"proposal_id"`
+	PushSessionID  *uuid.UUID     `json:"push_session_id,omitempty"`
 	PolicyBundleID uuid.UUID      `json:"policy_bundle_id"`
+	Stage          PolicyStage    `json:"stage,omitempty"`
+	Enforced       bool           `json:"enforced"`
 	InputDigest    string         `json:"input_digest"`
 	Effect         PolicyEffect   `json:"effect"`
 	Reasons        []PolicyReason `json:"reasons"`

@@ -35,7 +35,7 @@ func PolicyInputFromMap(stage string, raw map[string]any) (PolicyInput, error) {
 		}
 	}
 	if !IsValidStage(stage) {
-		return PolicyInput{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS or EGRESS, got %q", stage))
+		return PolicyInput{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS, EGRESS, or PUSH_EGRESS, got %q", stage))
 	}
 
 	var in PolicyInput
@@ -78,7 +78,7 @@ func NormalizePolicyInput(stage string, in PolicyInput) (PolicyInput, error) {
 		stage = strings.TrimSpace(in.Stage)
 	}
 	if !IsValidStage(stage) {
-		return PolicyInput{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS or EGRESS, got %q", stage))
+		return PolicyInput{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS, EGRESS, or PUSH_EGRESS, got %q", stage))
 	}
 	in.Stage = stage
 	initNonNilPolicyInput(&in)
@@ -115,6 +115,9 @@ func initNonNilPolicyInput(in *PolicyInput) {
 	}
 	if in.Principal.Roles == nil {
 		in.Principal.Roles = []string{}
+	}
+	if in.Push.RefNames == nil {
+		in.Push.RefNames = []string{}
 	}
 	if in.Flags == nil {
 		in.Flags = map[string]bool{}
@@ -191,16 +194,18 @@ func buildActivationVars(in PolicyInput) map[string]any {
 	}
 
 	return map[string]any{
-		"stage":      in.Stage,
-		"findings":   in.Findings,
-		"assessment": in.Assessment,
-		"change":     in.Change,
-		"repository": in.Repository,
-		"workspace":  in.Workspace,
-		"proposal":   in.Proposal,
-		"principal":  in.Principal,
-		"provenance": in.Provenance,
-		"flags":      flagsCopy,
+		"stage":       in.Stage,
+		"findings":    in.Findings,
+		"assessment":  in.Assessment,
+		"change":      in.Change,
+		"repository":  in.Repository,
+		"workspace":   in.Workspace,
+		"proposal":    in.Proposal,
+		"principal":   in.Principal,
+		"provenance":  in.Provenance,
+		"destination": in.Destination,
+		"push":        in.Push,
+		"flags":       flagsCopy,
 	}
 }
 
@@ -212,7 +217,7 @@ func (e *Engine) Evaluate(ctx context.Context, bundle *CompiledBundle, stage str
 		ctx = context.Background()
 	}
 	if !IsValidStage(stage) {
-		return EvalResult{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS or EGRESS, got %q", stage))
+		return EvalResult{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS, EGRESS, or PUSH_EGRESS, got %q", stage))
 	}
 
 	in, inputDigest, err := normalizeRawInput(stage, rawInput)
@@ -313,7 +318,7 @@ func (e *Engine) ComposeAndEvaluate(ctx context.Context, orgBundle, repoBundle *
 		ctx = context.Background()
 	}
 	if !IsValidStage(stage) {
-		return EvalResult{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS or EGRESS, got %q", stage))
+		return EvalResult{}, domain.BadRequest("INVALID_POLICY_STAGE", fmt.Sprintf("stage must be INGRESS, EGRESS, or PUSH_EGRESS, got %q", stage))
 	}
 	if orgBundle == nil && repoBundle == nil {
 		return e.Evaluate(ctx, nil, stage, rawInput)

@@ -18,6 +18,7 @@ import (
 type CreateScanRunParams struct {
 	ID             uuid.UUID
 	ProposalID     uuid.UUID
+	PushSessionID  *uuid.UUID
 	ArtifactID     uuid.UUID
 	Scanner        string
 	ScannerVersion string
@@ -29,13 +30,13 @@ type CreateScanRunParams struct {
 
 const createScanRunSQL = `
 INSERT INTO scan_runs (
-    id, proposal_id, artifact_id, scanner, scanner_version,
+    id, proposal_id, push_session_id, artifact_id, scanner, scanner_version,
     status, coverage, started_at, completed_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10
 )
-RETURNING id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+RETURNING id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
 `
 
 func marshalScanCoverage(c domain.ScanCoverage) (json.RawMessage, error) {
@@ -57,8 +58,16 @@ func marshalScanCoverage(c domain.ScanCoverage) (json.RawMessage, error) {
 }
 
 func (q *Queries) CreateScanRun(ctx context.Context, arg CreateScanRunParams) (ScanRunRow, error) {
-	if arg.ProposalID == uuid.Nil || arg.ArtifactID == uuid.Nil {
-		return ScanRunRow{}, domain.BadRequest("INVALID_SCAN_RUN", "proposal_id and artifact_id are required")
+	if arg.PushSessionID != nil && *arg.PushSessionID == uuid.Nil {
+		return ScanRunRow{}, domain.BadRequest("INVALID_ID", "push_session_id must not be nil when provided")
+	}
+	hasProposal := arg.ProposalID != uuid.Nil
+	hasPush := arg.PushSessionID != nil && *arg.PushSessionID != uuid.Nil
+	if hasProposal == hasPush {
+		return ScanRunRow{}, domain.BadRequest("INVALID_SCAN_RUN", "exactly one of proposal_id or push_session_id is required")
+	}
+	if arg.ArtifactID == uuid.Nil {
+		return ScanRunRow{}, domain.BadRequest("INVALID_SCAN_RUN", "artifact_id is required")
 	}
 	if arg.Scanner == "" || arg.ScannerVersion == "" {
 		return ScanRunRow{}, domain.BadRequest("INVALID_SCAN_RUN", "scanner and scanner_version must not be empty")
@@ -89,11 +98,17 @@ func (q *Queries) CreateScanRun(ctx context.Context, arg CreateScanRunParams) (S
 		t := arg.CompletedAt.UTC().Truncate(time.Microsecond)
 		completedAt = &t
 	}
+	var proposalIDArg *uuid.UUID
+	if hasProposal {
+		p := arg.ProposalID
+		proposalIDArg = &p
+	}
 
 	var row ScanRunRow
 	err = scanScanRunRow(q.db.QueryRow(ctx, createScanRunSQL,
 		id,
-		arg.ProposalID,
+		proposalIDArg,
+		arg.PushSessionID,
 		arg.ArtifactID,
 		arg.Scanner,
 		arg.ScannerVersion,
@@ -109,7 +124,7 @@ func (q *Queries) CreateScanRun(ctx context.Context, arg CreateScanRunParams) (S
 }
 
 const getScanRunByIDSQL = `
-SELECT id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+SELECT id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
 FROM scan_runs
 WHERE id = $1
 `
@@ -127,7 +142,7 @@ func (q *Queries) GetScanRunByID(ctx context.Context, id uuid.UUID) (ScanRunRow,
 }
 
 const listScanRunsByProposalSQL = `
-SELECT id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+SELECT id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
 FROM scan_runs
 WHERE proposal_id = $1
 ORDER BY started_at DESC, id DESC
@@ -138,6 +153,37 @@ func (q *Queries) ListScanRunsByProposal(ctx context.Context, proposalID uuid.UU
 		return nil, domain.BadRequest("INVALID_ID", "proposal_id must not be nil")
 	}
 	rows, err := q.db.Query(ctx, listScanRunsByProposalSQL, proposalID)
+	if err != nil {
+		return nil, MapError(err)
+	}
+	defer rows.Close()
+
+	out := make([]ScanRunRow, 0)
+	for rows.Next() {
+		var row ScanRunRow
+		if err := scanScanRunRow(rows, &row); err != nil {
+			return nil, MapError(err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapError(err)
+	}
+	return out, nil
+}
+
+const listScanRunsByPushSessionSQL = `
+SELECT id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+FROM scan_runs
+WHERE push_session_id = $1
+ORDER BY started_at DESC, id DESC
+`
+
+func (q *Queries) ListScanRunsByPushSession(ctx context.Context, pushSessionID uuid.UUID) ([]ScanRunRow, error) {
+	if pushSessionID == uuid.Nil {
+		return nil, domain.BadRequest("INVALID_ID", "push_session_id must not be nil")
+	}
+	rows, err := q.db.Query(ctx, listScanRunsByPushSessionSQL, pushSessionID)
 	if err != nil {
 		return nil, MapError(err)
 	}
@@ -173,7 +219,7 @@ SET status          = $2,
     scanner_version = COALESCE(NULLIF($5, ''), scanner_version)
 WHERE id = $1
   AND status IN ('PENDING', 'RUNNING')
-RETURNING id, proposal_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
+RETURNING id, proposal_id, push_session_id, artifact_id, scanner, scanner_version, status, coverage, started_at, completed_at
 `
 
 func isTerminalScanStatus(s domain.ScanStatus) bool {
@@ -469,11 +515,81 @@ func (q *Queries) ListFindingsByProposal(ctx context.Context, arg ListFindingsBy
 	return out, nil
 }
 
+type ListFindingsByPushSessionParams struct {
+	PushSessionID uuid.UUID
+	Scanner       *string
+	Severity      *domain.Severity
+	CursorID      *uuid.UUID
+	Limit         int
+}
+
+const listFindingsByPushSessionSQL = `
+SELECT f.id, f.scan_run_id, f.evidence_id, f.scanner, f.category, f.severity, f.rule_id,
+    f.path, f.start_line, f.end_line, f.fingerprint, f.evidence_artifact_id, f.evidence_ref,
+    f.baseline, f.confidence, f.message, f.redacted, f.metadata
+FROM findings f
+JOIN scan_runs sr ON sr.id = f.scan_run_id
+WHERE sr.push_session_id = $1
+  AND ($2::text IS NULL OR f.scanner = $2::text)
+  AND ($3::text IS NULL OR f.severity = $3::text)
+  AND ($4::uuid IS NULL OR f.id > $4::uuid)
+ORDER BY f.id ASC
+LIMIT $5
+`
+
+func (q *Queries) ListFindingsByPushSession(ctx context.Context, arg ListFindingsByPushSessionParams) ([]FindingRow, error) {
+	if arg.PushSessionID == uuid.Nil {
+		return nil, domain.BadRequest("INVALID_ID", "push_session_id must not be nil")
+	}
+	var scannerArg *string
+	if arg.Scanner != nil && *arg.Scanner != "" {
+		s := *arg.Scanner
+		scannerArg = &s
+	}
+	var severityArg *string
+	if arg.Severity != nil {
+		if !arg.Severity.IsValid() {
+			return nil, domain.BadRequest("INVALID_SEVERITY", "invalid finding severity")
+		}
+		s := string(*arg.Severity)
+		severityArg = &s
+	}
+	if arg.CursorID != nil && *arg.CursorID == uuid.Nil {
+		return nil, domain.BadRequest("INVALID_CURSOR", "cursor_id must not be nil")
+	}
+	limit := arg.Limit
+	if limit <= 0 {
+		limit = 100
+	} else if limit > 1001 {
+		limit = 1001
+	}
+
+	rows, err := q.db.Query(ctx, listFindingsByPushSessionSQL, arg.PushSessionID, scannerArg, severityArg, arg.CursorID, limit)
+	if err != nil {
+		return nil, MapError(err)
+	}
+	defer rows.Close()
+
+	out := make([]FindingRow, 0)
+	for rows.Next() {
+		var row FindingRow
+		if err := scanFindingRow(rows, &row); err != nil {
+			return nil, MapError(err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapError(err)
+	}
+	return out, nil
+}
+
 // --- model_assessments ---
 
 type CreateModelAssessmentParams struct {
 	ID             uuid.UUID
 	ProposalID     uuid.UUID
+	PushSessionID  *uuid.UUID
 	ArtifactID     uuid.UUID
 	ModelRoute     string
 	ModelVersion   string
@@ -491,15 +607,15 @@ type CreateModelAssessmentParams struct {
 
 const createModelAssessmentSQL = `
 INSERT INTO model_assessments (
-    id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+    id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12,
-    $13, $14, $15
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12, $13,
+    $14, $15, $16
 )
-RETURNING id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+RETURNING id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 `
@@ -540,8 +656,16 @@ func marshalAssessmentResultAndEvidence(res domain.AssessmentResult, evidenceIDs
 }
 
 func (q *Queries) CreateModelAssessment(ctx context.Context, arg CreateModelAssessmentParams) (ModelAssessmentRow, error) {
-	if arg.ProposalID == uuid.Nil || arg.ArtifactID == uuid.Nil {
-		return ModelAssessmentRow{}, domain.BadRequest("INVALID_MODEL_ASSESSMENT", "proposal_id and artifact_id are required")
+	if arg.PushSessionID != nil && *arg.PushSessionID == uuid.Nil {
+		return ModelAssessmentRow{}, domain.BadRequest("INVALID_ID", "push_session_id must not be nil when provided")
+	}
+	hasProposal := arg.ProposalID != uuid.Nil
+	hasPush := arg.PushSessionID != nil && *arg.PushSessionID != uuid.Nil
+	if hasProposal == hasPush {
+		return ModelAssessmentRow{}, domain.BadRequest("INVALID_MODEL_ASSESSMENT", "exactly one of proposal_id or push_session_id is required")
+	}
+	if arg.ArtifactID == uuid.Nil {
+		return ModelAssessmentRow{}, domain.BadRequest("INVALID_MODEL_ASSESSMENT", "artifact_id is required")
 	}
 	if arg.ModelRoute == "" || arg.ModelVersion == "" || arg.PromptVersion == "" || arg.AssessmentType == "" {
 		return ModelAssessmentRow{}, domain.BadRequest("INVALID_MODEL_ASSESSMENT", "model_route, model_version, prompt_version, and assessment_type are required")
@@ -582,10 +706,17 @@ func (q *Queries) CreateModelAssessment(ctx context.Context, arg CreateModelAsse
 	}
 	createdAt := normalizeTimestamp(arg.CreatedAt)
 
+	var proposalIDArg *uuid.UUID
+	if hasProposal {
+		p := arg.ProposalID
+		proposalIDArg = &p
+	}
+
 	var row ModelAssessmentRow
 	err = scanModelAssessmentRow(q.db.QueryRow(ctx, createModelAssessmentSQL,
 		id,
-		arg.ProposalID,
+		proposalIDArg,
+		arg.PushSessionID,
 		arg.ArtifactID,
 		arg.ModelRoute,
 		arg.ModelVersion,
@@ -607,7 +738,7 @@ func (q *Queries) CreateModelAssessment(ctx context.Context, arg CreateModelAsse
 }
 
 const getModelAssessmentByIDSQL = `
-SELECT id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+SELECT id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 FROM model_assessments
@@ -627,7 +758,7 @@ func (q *Queries) GetModelAssessmentByID(ctx context.Context, id uuid.UUID) (Mod
 }
 
 const listModelAssessmentsByProposalSQL = `
-SELECT id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+SELECT id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 FROM model_assessments
@@ -640,6 +771,39 @@ func (q *Queries) ListModelAssessmentsByProposal(ctx context.Context, proposalID
 		return nil, domain.BadRequest("INVALID_ID", "proposal_id must not be nil")
 	}
 	rows, err := q.db.Query(ctx, listModelAssessmentsByProposalSQL, proposalID)
+	if err != nil {
+		return nil, MapError(err)
+	}
+	defer rows.Close()
+
+	out := make([]ModelAssessmentRow, 0)
+	for rows.Next() {
+		var row ModelAssessmentRow
+		if err := scanModelAssessmentRow(rows, &row); err != nil {
+			return nil, MapError(err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapError(err)
+	}
+	return out, nil
+}
+
+const listModelAssessmentsByPushSessionSQL = `
+SELECT id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
+    assessment_type, status, risk, disposition, result, evidence_ids,
+    input_digest, output_digest, created_at
+FROM model_assessments
+WHERE push_session_id = $1
+ORDER BY created_at DESC, id DESC
+`
+
+func (q *Queries) ListModelAssessmentsByPushSession(ctx context.Context, pushSessionID uuid.UUID) ([]ModelAssessmentRow, error) {
+	if pushSessionID == uuid.Nil {
+		return nil, domain.BadRequest("INVALID_ID", "push_session_id must not be nil")
+	}
+	rows, err := q.db.Query(ctx, listModelAssessmentsByPushSessionSQL, pushSessionID)
 	if err != nil {
 		return nil, MapError(err)
 	}
@@ -687,7 +851,7 @@ SET status         = $2,
     input_digest   = COALESCE(NULLIF($11, ''), input_digest)
 WHERE id = $1
   AND status = 'PENDING'
-RETURNING id, proposal_id, artifact_id, model_route, model_version, prompt_version,
+RETURNING id, proposal_id, push_session_id, artifact_id, model_route, model_version, prompt_version,
     assessment_type, status, risk, disposition, result, evidence_ids,
     input_digest, output_digest, created_at
 `
@@ -782,10 +946,12 @@ func (q *Queries) CountActiveModelAssessments(ctx context.Context) (int64, error
 // --- scan helpers ---
 
 func scanScanRunRow(s rowScanner, row *ScanRunRow) error {
+	var proposalID *uuid.UUID
 	var status string
 	if err := s.Scan(
 		&row.ID,
-		&row.ProposalID,
+		&proposalID,
+		&row.PushSessionID,
 		&row.ArtifactID,
 		&row.Scanner,
 		&row.ScannerVersion,
@@ -795,6 +961,11 @@ func scanScanRunRow(s rowScanner, row *ScanRunRow) error {
 		&row.CompletedAt,
 	); err != nil {
 		return err
+	}
+	if proposalID != nil {
+		row.ProposalID = *proposalID
+	} else {
+		row.ProposalID = uuid.Nil
 	}
 	row.Status = domain.ScanStatus(status)
 	return nil
@@ -829,11 +1000,13 @@ func scanFindingRow(s rowScanner, row *FindingRow) error {
 }
 
 func scanModelAssessmentRow(s rowScanner, row *ModelAssessmentRow) error {
+	var proposalID *uuid.UUID
 	var status string
 	var risk, disposition *string
 	if err := s.Scan(
 		&row.ID,
-		&row.ProposalID,
+		&proposalID,
+		&row.PushSessionID,
 		&row.ArtifactID,
 		&row.ModelRoute,
 		&row.ModelVersion,
@@ -849,6 +1022,11 @@ func scanModelAssessmentRow(s rowScanner, row *ModelAssessmentRow) error {
 		&row.CreatedAt,
 	); err != nil {
 		return err
+	}
+	if proposalID != nil {
+		row.ProposalID = *proposalID
+	} else {
+		row.ProposalID = uuid.Nil
 	}
 	row.Status = domain.AssessmentStatus(status)
 	if risk != nil {

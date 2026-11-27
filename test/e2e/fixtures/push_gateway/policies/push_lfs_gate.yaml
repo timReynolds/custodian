@@ -1,0 +1,39 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: push-lfs-gate
+  version: "1.0.0"
+  scope: REPO
+defaults:
+  effect: DENY
+  onError: DENY
+rules:
+  - id: push.lfs.oversize_approval
+    description: Require approval for large Git LFS push payloads.
+    stages: [PUSH_EGRESS]
+    when: push.has_lfs && push.lfs_total_bytes > 1048576
+    effect: REQUIRE_APPROVAL
+    overridable: true
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: ip-review
+        minimum: 1
+    message: Git LFS payload exceeds 1 MiB threshold and requires approval.
+  - id: push.lfs.block_unregistered
+    description: Deny any Git LFS upload to unregistered destinations.
+    stages: [PUSH_EGRESS]
+    when: push.has_lfs && !destination.registered
+    effect: DENY
+    overridable: false
+    message: Git LFS uploads are prohibited to unregistered destinations.
+  - id: push.lfs.allow_bounded
+    description: Allow bounded Git LFS pushes when inspection is clean.
+    stages: [PUSH_EGRESS]
+    when: >-
+      push.has_lfs &&
+      push.lfs_total_bytes <= 1048576 &&
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.restricted_ip_matches == 0 &&
+      destination.registered
+    effect: ALLOW

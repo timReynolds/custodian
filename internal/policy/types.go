@@ -28,6 +28,9 @@ const (
 	// StageEgress evaluates policies on proposal egress before human approval and publication.
 	StageEgress = "EGRESS"
 
+	// StagePushEgress evaluates policies on git push egress before upstream forwarding.
+	StagePushEgress = "PUSH_EGRESS"
+
 	// DefaultObligationType is applied when a YAML rule obligation omits `type`.
 	DefaultObligationType = "HUMAN_REVIEW"
 
@@ -37,7 +40,7 @@ const (
 
 // IsValidStage reports whether stage is a supported Custodian evaluation stage.
 func IsValidStage(stage string) bool {
-	return stage == StageIngress || stage == StageEgress
+	return stage == StageIngress || stage == StageEgress || stage == StagePushEgress
 }
 
 // Bundle represents the parsed YAML/JSON PolicyBundle definition.
@@ -118,6 +121,12 @@ type FindingsInput struct {
 	HighVulnerabilities       int64            `cel:"high_vulnerabilities" json:"high_vulnerabilities"`
 	HighSASTFindings          int64            `cel:"high_sast_findings" json:"high_sast_findings"`
 	TotalFindings             int64            `cel:"total_findings" json:"total_findings"`
+	IPExactMatches            int64            `cel:"ip_exact_matches" json:"ip_exact_matches"`
+	IPWinnowMatches           int64            `cel:"ip_winnow_matches" json:"ip_winnow_matches"`
+	IPHeaderStripMatches      int64            `cel:"ip_header_strip_matches" json:"ip_header_strip_matches"`
+	ConcealmentFindings       int64            `cel:"concealment_findings" json:"concealment_findings"`
+	RestrictedIPMatches       int64            `cel:"restricted_ip_matches" json:"restricted_ip_matches"`
+	ConfidentialIPMatches     int64            `cel:"confidential_ip_matches" json:"confidential_ip_matches"`
 	CountsByCategory          map[string]int64 `cel:"counts_by_category" json:"counts_by_category"`
 	CountsBySeverity          map[string]int64 `cel:"counts_by_severity" json:"counts_by_severity"`
 	CountsByScanner           map[string]int64 `cel:"counts_by_scanner" json:"counts_by_scanner"`
@@ -202,18 +211,44 @@ type ProvenanceInput struct {
 	CaptureMethod string `cel:"capture_method" json:"capture_method"`
 }
 
+// DestinationInput projects Git push remote/destination metadata into the CEL `destination` variable.
+type DestinationInput struct {
+	ID             string `cel:"id" json:"id"`
+	Name           string `cel:"name" json:"name"`
+	Host           string `cel:"host" json:"host"`
+	Registered     bool   `cel:"registered" json:"registered"`
+	External       bool   `cel:"external" json:"external"`
+	Classification string `cel:"classification" json:"classification"`
+	Org            string `cel:"org" json:"org"`
+	Owner          string `cel:"owner" json:"owner"`
+}
+
+// PushInput projects Git push transaction and LFS metadata into the CEL `push` variable.
+type PushInput struct {
+	HasLFS                 bool     `cel:"has_lfs" json:"has_lfs"`
+	LFSObjectCount         int64    `cel:"lfs_object_count" json:"lfs_object_count"`
+	LFSTotalBytes          int64    `cel:"lfs_total_bytes" json:"lfs_total_bytes"`
+	RefNames               []string `cel:"ref_names" json:"ref_names"`
+	CommitCount            int64    `cel:"commit_count" json:"commit_count"`
+	EgressMode             string   `cel:"egress_mode" json:"egress_mode"`
+	ApprovalReleasePresent bool     `cel:"approval_release_present" json:"approval_release_present"`
+	PushManifestDigest     string   `cel:"push_manifest_digest" json:"push_manifest_digest"`
+}
+
 // PolicyInput is the complete verified fact structure bound into the CEL evaluation environment.
 type PolicyInput struct {
-	Stage      string          `json:"stage,omitempty"`
-	Findings   FindingsInput   `json:"findings"`
-	Assessment AssessmentInput `json:"assessment"`
-	Change     ChangeInput     `json:"change"`
-	Repository RepositoryInput `json:"repository"`
-	Workspace  WorkspaceInput  `json:"workspace"`
-	Proposal   ProposalInput   `json:"proposal"`
-	Principal  PrincipalInput  `json:"principal"`
-	Provenance ProvenanceInput `json:"provenance"`
-	Flags      map[string]bool `json:"flags,omitempty"`
+	Stage       string           `json:"stage,omitempty"`
+	Findings    FindingsInput    `json:"findings"`
+	Assessment  AssessmentInput  `json:"assessment"`
+	Change      ChangeInput      `json:"change"`
+	Repository  RepositoryInput  `json:"repository"`
+	Workspace   WorkspaceInput   `json:"workspace"`
+	Proposal    ProposalInput    `json:"proposal"`
+	Principal   PrincipalInput   `json:"principal"`
+	Provenance  ProvenanceInput  `json:"provenance"`
+	Destination DestinationInput `json:"destination"`
+	Push        PushInput        `json:"push"`
+	Flags       map[string]bool  `json:"flags,omitempty"`
 }
 
 // ValidationError describes a schema, syntax, type, or test-suite failure during bundle validation.

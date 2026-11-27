@@ -18,6 +18,7 @@ import (
 	"github.com/timreynolds/custodian/internal/api"
 	"github.com/timreynolds/custodian/internal/api/openapi"
 	"github.com/timreynolds/custodian/internal/domain"
+	"github.com/timreynolds/custodian/internal/persistence"
 	"github.com/timreynolds/custodian/internal/workspaces"
 )
 
@@ -433,6 +434,383 @@ func TestOpenAPIParityAll16Routes(t *testing.T) {
 				if errEnv.Error.Code != tc.wantErrCode {
 					t.Fatalf("expected error code %q for %s, got %q (%s)", tc.wantErrCode, tc.name, errEnv.Error.Code, rec.Body.String())
 				}
+			}
+			resp := rec.Result()
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			httpReq.Body = io.NopCloser(bytes.NewReader([]byte(tc.body)))
+			if valid, errs := val.ValidateHttpResponse(httpReq, resp); !valid {
+				t.Fatalf("400 ErrorResponse failed OpenAPI validation for %s: %+v", tc.name, errs)
+			}
+		})
+	}
+}
+
+type fakeIPCorpusReindexer struct{}
+
+func (f *fakeIPCorpusReindexer) Reindex(_ context.Context, input api.IPCorpusReindexInput) (api.IPCorpusReindexResult, error) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	return api.IPCorpusReindexResult{
+		Status:              domain.IPCorpusStatusReady,
+		FingerprintsIndexed: int64(len(input.Files) + 3),
+		FilesProcessed:      int64(len(input.Files)),
+		LastIndexedDigest:   domain.SHA256Hex([]byte(input.Corpus.Name)),
+		CompletedAt:         &now,
+	}, nil
+}
+
+func TestOpenAPIParityPushControlPlaneRoutes(t *testing.T) {
+	ctx := context.Background()
+	env := newAPITestEnv(t, func(d *api.Deps) {
+		d.IPCorpusReindexer = &fakeIPCorpusReindexer{}
+	})
+
+	val, err := openapi.NewHTTPValidator()
+	if err != nil {
+		t.Fatalf("NewHTTPValidator: %v", err)
+	}
+	defer val.Release()
+
+	humanA := env.mintHuman("parity-push-a", "ppa@acme.test", []string{"engineering"}, []string{"developer"}, "openid profile email")
+	secAdmin := env.mintHuman("parity-sec-admin", "psa@acme.test", []string{"engineering", "ip-review", "security-admins"}, nil, "openid profile email")
+	auditor := env.mintAuditor("parity-push-auditor")
+	policyAdmin := env.mintPolicyAdmin("parity-push-poladmin")
+
+	humanACaller, err := env.dir.ResolveCaller(ctx, mustVerifyToken(t, env.oidc, humanA))
+	if err != nil {
+		t.Fatalf("ResolveCaller humanA: %v", err)
+	}
+	if _, err := env.dir.ResolveCaller(ctx, mustVerifyToken(t, env.oidc, secAdmin)); err != nil {
+		t.Fatalf("ResolveCaller secAdmin: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	digest := strings.Repeat("c", 64)
+	bundleArt, err := env.store.RegisterArtifact(ctx, persistence.RegisterArtifactParams{
+		Kind:              domain.ArtifactKindGitPushBundle,
+		SHA256:            digest,
+		StorageKey:        "pushes/parity-bundle.tar.gz",
+		StorageGeneration: "1",
+		SizeBytes:         512,
+		Format:            "tar.gz",
+		UploadedBy:        &humanACaller.Principal.ID,
+	})
+	if err != nil {
+		t.Fatalf("RegisterArtifact(GIT_PUSH_BUNDLE): %v", err)
+	}
+
+	ps, err := env.store.CreatePushSession(ctx, persistence.CreatePushSessionParams{
+		PrincipalID:           humanACaller.Principal.ID,
+		RepositoryID:          &env.repo.ID,
+		Destination:           "GitHub.COM/acme/custodian-demo",
+		DestinationHost:       "GitHub.COM",
+		DestinationRegistered: true,
+		DestinationExternal:   false,
+		Transport:             domain.PushTransportHTTPS,
+		RefUpdates:            []domain.PushRefUpdate{{RefName: "refs/heads/main", OldOID: strings.Repeat("0", 40), NewOID: strings.Repeat("1", 40)}},
+		HasLFS:                true,
+		LFSObjects:            []domain.PushLFSObject{{OID: digest, Size: 64}},
+		LFSObjectCount:        1,
+		LFSTotalBytes:         64,
+		PushManifestDigest:    digest,
+		BundleArtifactID:      &bundleArt.ID,
+		EgressMode:            domain.EgressModeEnforceBlock,
+		PassiveAuditDelivery:  domain.PassiveAuditDeliveryAsync,
+		Status:                domain.PushSessionStatusApprovalRequired,
+		CreatedAt:             now,
+	})
+	if err != nil {
+		t.Fatalf("CreatePushSession: %v", err)
+	}
+
+	sr, err := env.store.CreateScanRun(ctx, persistence.CreateScanRunParams{
+		PushSessionID:  &ps.ID,
+		ArtifactID:     bundleArt.ID,
+		Scanner:        "ip_fingerprint",
+		ScannerVersion: "1.0.0",
+		Status:         domain.ScanStatusCompleted,
+		Coverage:       domain.ScanCoverage{FilesExamined: 1, FilesSkipped: 0, Complete: true},
+		StartedAt:      now,
+		CompletedAt:    &now,
+	})
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	if _, err := env.store.CreateFinding(ctx, persistence.CreateFindingParams{
+		ScanRunID:   sr.ID,
+		Category:    "secret",
+		Severity:    domain.SeverityHigh,
+		RuleID:      "rule-sec",
+		Path:        "cfg.go",
+		Fingerprint: digest,
+		Redacted:    true,
+		Message:     "redacted secret finding",
+		Metadata:    map[string]any{"source_ref": "safe-ref"},
+	}); err != nil {
+		t.Fatalf("CreateFinding: %v", err)
+	}
+	if _, err := env.store.CreateModelAssessment(ctx, persistence.CreateModelAssessmentParams{
+		PushSessionID:  &ps.ID,
+		ArtifactID:     bundleArt.ID,
+		ModelRoute:     "not-required",
+		ModelVersion:   "not-required",
+		PromptVersion:  "not-required",
+		AssessmentType: "IP_PROVENANCE",
+		Status:         domain.AssessmentStatusNotRequired,
+		Risk:           domain.RiskLevelNone,
+		Disposition:    domain.DispositionNotRequired,
+		Result:         domain.AssessmentResult{SchemaVersion: "1.0", AssessmentType: "IP_PROVENANCE", Risk: domain.RiskLevelNone, Disposition: domain.DispositionNotRequired, Confidence: 1.0, Summary: "not required"},
+		InputDigest:    digest,
+		OutputDigest:   digest,
+		CreatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateModelAssessment: %v", err)
+	}
+	dec, err := env.store.CreatePolicyDecision(ctx, persistence.CreatePolicyDecisionParams{
+		PushSessionID:  &ps.ID,
+		PolicyBundleID: env.policyBundle.ID,
+		Stage:          "PUSH_EGRESS",
+		InputDigest:    digest,
+		Effect:         domain.PolicyEffectRequireApproval,
+		Reasons:        []domain.PolicyReason{{RuleID: "ip-review", Effect: domain.PolicyEffectRequireApproval, Stage: "PUSH_EGRESS", Message: "needs approval"}},
+		Obligations:    []domain.Obligation{{Type: "REQUIRE_APPROVAL", ReviewerGroup: "ip-review", Minimum: 1}},
+		CreatedAt:      now,
+	})
+	if err != nil {
+		t.Fatalf("CreatePolicyDecision: %v", err)
+	}
+	eff := domain.PolicyEffectRequireApproval
+	if _, err := env.store.ApplyPushSessionPolicyDecision(ctx, persistence.ApplyPushSessionPolicyDecisionParams{
+		ID:               ps.ID,
+		PolicyDecisionID: dec.ID,
+		Verdict:          eff,
+		Status:           domain.PushSessionStatusApprovalRequired,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("ApplyPushSessionPolicyDecision: %v", err)
+	}
+
+	// 1. GET /v1/pushes (200)
+	rec := env.do(http.MethodGet, "/v1/pushes?status=APPROVAL_REQUIRED&egress_mode=ENFORCE_BLOCK&limit=10", humanA, "", nil, nil, val)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/pushes expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. GET /v1/pushes/{id} (200) + 404
+	rec = env.do(http.MethodGet, "/v1/pushes/"+ps.ID.String(), humanA, "", nil, nil, val)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/pushes/{id} expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = env.do(http.MethodGet, "/v1/pushes/"+domain.MustNewID().String(), auditor, "", nil, nil, val)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/pushes/missing expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 3. POST /v1/pushes/{id}/approvals (201) + 403 SoD/role
+	rec = env.do(http.MethodPost, "/v1/pushes/"+ps.ID.String()+"/approvals", humanA, "par-app-forbidden", map[string]any{
+		"decision":             "APPROVE",
+		"push_manifest_digest": digest,
+	}, nil, val)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /v1/pushes/{id}/approvals by humanA expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = env.do(http.MethodPost, "/v1/pushes/"+ps.ID.String()+"/approvals", secAdmin, "par-app-ok", map[string]any{
+		"decision":             "APPROVE",
+		"push_manifest_digest": digest,
+		"ttl_seconds":          900,
+		"comment":              "Approved for parity",
+	}, nil, val)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/pushes/{id}/approvals expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 4. PUT /v1/repositories/{id}/egress-mode (200)
+	rec = env.do(http.MethodPut, "/v1/repositories/"+env.repo.ID.String()+"/egress-mode", secAdmin, "par-egress-1", map[string]any{
+		"egress_mode":            "ENFORCE_BLOCK",
+		"passive_audit_delivery": "INLINE_WARN",
+		"remote_host":            "github.com",
+		"registered_destination": true,
+		"external":               false,
+	}, nil, val)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /v1/repositories/{id}/egress-mode expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 5. POST /v1/ip-corpora (201) + GET /v1/ip-corpora (200) + POST /v1/ip-corpora/{id}/reindex (202)
+	rec = env.do(http.MethodPost, "/v1/ip-corpora", secAdmin, "par-corpus-1", map[string]any{
+		"name":           "parity-restricted-ip",
+		"classification": "RESTRICTED",
+		"files": []map[string]any{
+			{"path": "secret/algo.go", "content": "package secret\nfunc Proprietary() {}\n"},
+		},
+	}, nil, val)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/ip-corpora expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var corpResp api.IPCorpusDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &corpResp); err != nil {
+		t.Fatalf("unmarshal IPCorpusDTO: %v", err)
+	}
+	if strings.Contains(rec.Body.String(), "Proprietary") || strings.Contains(rec.Body.String(), "secret/algo.go") {
+		t.Fatalf("POST /v1/ip-corpora leaked raw source or file path: %s", rec.Body.String())
+	}
+
+	rec = env.do(http.MethodGet, "/v1/ip-corpora?classification=RESTRICTED&limit=10", auditor, "", nil, nil, val)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/ip-corpora expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = env.do(http.MethodPost, "/v1/ip-corpora/"+corpResp.ID+"/reindex", secAdmin, "par-reindex-1", map[string]any{
+		"force": true,
+	}, nil, val)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /v1/ip-corpora/{id}/reindex expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 6. POST /v1/policies/evaluate with PUSH_EGRESS stage
+	pushPolYAML, err := os.ReadFile(filepath.Join("..", "..", "policies", "defaults", "push-ip-protection.yaml"))
+	if err != nil {
+		t.Fatalf("read push-ip-protection.yaml: %v", err)
+	}
+	rec = env.do(http.MethodPost, "/v1/policies/evaluate", policyAdmin, "", map[string]any{
+		"bundle_yaml": string(pushPolYAML),
+		"stage":       "PUSH_EGRESS",
+		"input": map[string]any{
+			"repository":  map[string]any{"full_name": "acme/custodian-demo", "classification": "INTERNAL"},
+			"destination": map[string]any{"host": "github.com", "registered": true, "external": false},
+			"push":        map[string]any{"has_lfs": true, "egress_mode": "ENFORCE_BLOCK"},
+			"findings":    map[string]any{"mandatory_scanners_complete": true, "scan_complete": true},
+			"assessment":  map[string]any{"status": "NOT_REQUIRED", "disposition": "NOT_REQUIRED"},
+		},
+	}, nil, val)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/policies/evaluate (PUSH_EGRESS) expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 7. POST /v1/pushes/{id}/approvals with decision=REJECT validates against OpenAPI UUIDv7 (both when revoking active release and when none existed)
+	rec = env.do(http.MethodPost, "/v1/pushes/"+ps.ID.String()+"/approvals", secAdmin, "par-reject-active", map[string]any{
+		"decision":             "REJECT",
+		"push_manifest_digest": digest,
+		"reason":               "Rejected after secondary review",
+	}, nil, val)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/pushes/{id}/approvals REJECT expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var rejectResp api.PushApprovalReleaseResponseDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &rejectResp); err != nil {
+		t.Fatalf("unmarshal rejectResp: %v", err)
+	}
+	rejectUUID, err := uuid.Parse(rejectResp.ID)
+	if err != nil || !domain.IsUUIDv7(rejectUUID) {
+		t.Fatalf("REJECT response id must be valid UUIDv7, got %q (err=%v)", rejectResp.ID, err)
+	}
+
+	psRejectNoRel, err := env.store.CreatePushSession(ctx, persistence.CreatePushSessionParams{
+		PrincipalID:        humanACaller.Principal.ID,
+		RepositoryID:       &env.repo.ID,
+		Destination:        "github.com/acme/custodian-demo",
+		DestinationHost:    "github.com",
+		Transport:          domain.PushTransportHTTPS,
+		PushManifestDigest: digest,
+		EgressMode:         domain.EgressModeEnforceBlock,
+		Status:             domain.PushSessionStatusApprovalRequired,
+		CreatedAt:          now,
+	})
+	if err != nil {
+		t.Fatalf("CreatePushSession psRejectNoRel: %v", err)
+	}
+	decNoRel, err := env.store.CreatePolicyDecision(ctx, persistence.CreatePolicyDecisionParams{
+		PushSessionID:  &psRejectNoRel.ID,
+		PolicyBundleID: env.policyBundle.ID,
+		Stage:          "PUSH_EGRESS",
+		InputDigest:    digest,
+		Effect:         domain.PolicyEffectRequireApproval,
+		CreatedAt:      now,
+	})
+	if err != nil {
+		t.Fatalf("CreatePolicyDecision decNoRel: %v", err)
+	}
+	if _, err := env.store.ApplyPushSessionPolicyDecision(ctx, persistence.ApplyPushSessionPolicyDecisionParams{
+		ID:               psRejectNoRel.ID,
+		PolicyDecisionID: decNoRel.ID,
+		Verdict:          eff,
+		Status:           domain.PushSessionStatusApprovalRequired,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("ApplyPushSessionPolicyDecision psRejectNoRel: %v", err)
+	}
+	rec = env.do(http.MethodPost, "/v1/pushes/"+psRejectNoRel.ID.String()+"/approvals", secAdmin, "par-reject-norel", map[string]any{
+		"decision":             "REJECT",
+		"push_manifest_digest": digest,
+		"reason":               "Rejected directly",
+	}, nil, val)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/pushes/{id}/approvals REJECT (no active release) expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 8. Negative OpenAPI parity checks for push/repo/corpus maxLength & minItems
+	pushNegCases := []struct {
+		name    string
+		method  string
+		path    string
+		idemKey string
+		body    string
+	}{
+		{
+			name:    "ApprovePush destination 513 with spaces",
+			method:  http.MethodPost,
+			path:    "/v1/pushes/" + ps.ID.String() + "/approvals",
+			idemKey: "par-neg-dest-513",
+			body:    `{"decision":"APPROVE","push_manifest_digest":"` + digest + `","destination":"  ` + strings.Repeat("a", 511) + `"}`,
+		},
+		{
+			name:    "SetRepoEgressMode remote_host 256 with spaces",
+			method:  http.MethodPut,
+			path:    "/v1/repositories/" + env.repo.ID.String() + "/egress-mode",
+			idemKey: "par-neg-host-256",
+			body:    `{"egress_mode":"ENFORCE_BLOCK","remote_host":"  ` + strings.Repeat("a", 254) + `"}`,
+		},
+		{
+			name:    "SetRepoEgressMode git_remote_url 513 with spaces",
+			method:  http.MethodPut,
+			path:    "/v1/repositories/" + env.repo.ID.String() + "/egress-mode",
+			idemKey: "par-neg-url-513",
+			body:    `{"egress_mode":"ENFORCE_BLOCK","git_remote_url":"  ` + strings.Repeat("a", 511) + `"}`,
+		},
+		{
+			name:    "CreateIPCorpus files empty array",
+			method:  http.MethodPost,
+			path:    "/v1/ip-corpora",
+			idemKey: "par-neg-files-empty",
+			body:    `{"name":"neg-files","classification":"RESTRICTED","source_ref":"git://internal/repo","files":[]}`,
+		},
+		{
+			name:    "CreateIPCorpus name 256 with spaces",
+			method:  http.MethodPost,
+			path:    "/v1/ip-corpora",
+			idemKey: "par-neg-name-256",
+			body:    `{"name":"  ` + strings.Repeat("a", 254) + `","classification":"RESTRICTED","source_ref":"git://internal/repo"}`,
+		},
+		{
+			name:    "ReindexIPCorpus files empty array",
+			method:  http.MethodPost,
+			path:    "/v1/ip-corpora/" + corpResp.ID + "/reindex",
+			idemKey: "par-neg-reindex-files",
+			body:    `{"files":[]}`,
+		},
+	}
+	for _, tc := range pushNegCases {
+		t.Run(tc.name, func(t *testing.T) {
+			httpReq := httptest.NewRequest(tc.method, "http://127.0.0.1:8080"+tc.path, bytes.NewReader([]byte(tc.body)))
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("Authorization", "Bearer "+secAdmin)
+			httpReq.Header.Set("Idempotency-Key", tc.idemKey)
+			if valid, _ := val.ValidateHttpRequestSync(httpReq); valid {
+				t.Fatalf("expected OpenAPI validator to reject %s", tc.name)
+			}
+			rec := env.do(tc.method, tc.path, secAdmin, tc.idemKey, tc.body, nil, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 BadRequest for %s, got %d: %s", tc.name, rec.Code, rec.Body.String())
 			}
 			resp := rec.Result()
 			respBody, _ := io.ReadAll(resp.Body)

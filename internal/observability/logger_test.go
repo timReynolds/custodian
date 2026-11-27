@@ -325,3 +325,175 @@ func TestSafeHandler_RedactsPasswordOnlyURLsAndAllowsCredentialFreeURLs(t *testi
 		}
 	}
 }
+
+func TestSafeHandler_PushGatewayAllowlistDenylistAndPatterns(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(LoggerConfig{
+		Writer:         &buf,
+		Format:         LogFormatJSON,
+		Component:      "custodian-git-gateway",
+		ExtraAllowlist: []string{"raw_bundle", "packfile", "oidc_token", "oauth_token", "pat", "ssh_cert", "ssh_private_key", "commit_message"},
+	})
+
+	logger.Info("push session evaluated",
+		"push_session_id", "ps_123",
+		"push_manifest_digest", strings.Repeat("a", 64),
+		"transport", "SSH",
+		"egress_mode", "ENFORCE_BLOCK",
+		"has_lfs", true,
+		"ssh_cert_serial", "42",
+		"raw_bundle", "PACK...",
+		"packfile", "raw-pack-bytes",
+		"oidc_token", "oidc-secret-val",
+		"oauth_token", "oauth-secret-val",
+		"pat", "pat-secret-val",
+		"ssh_cert", "ssh-cert-blob",
+		"ssh_private_key", "private-key-material",
+		"commit_message", "secret commit msg",
+		slog.Group("push",
+			slog.String("push_session_id", "ps_123"),
+			slog.String("raw_pack", "pack-leak"),
+		),
+	)
+
+	out := buf.String()
+	var parsed map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("invalid JSON log output: %v\nraw: %s", err, out)
+	}
+	for _, k := range []string{"push_session_id", "push_manifest_digest", "transport", "egress_mode", "has_lfs", "ssh_cert_serial", "push"} {
+		if _, ok := parsed[k]; !ok {
+			t.Fatalf("expected allowlisted push key %q in output: %s", k, out)
+		}
+	}
+	for _, forbiddenKey := range []string{"raw_bundle", "packfile", "oidc_token", "oauth_token", "pat", "ssh_cert", "ssh_private_key", "commit_message"} {
+		if _, ok := parsed[forbiddenKey]; ok {
+			t.Fatalf("denylisted key %q leaked into log output: %s", forbiddenKey, out)
+		}
+	}
+	for _, forbiddenVal := range []string{"PACK...", "raw-pack-bytes", "oidc-secret-val", "oauth-secret-val", "pat-secret-val", "ssh-cert-blob", "private-key-material", "secret commit msg", "pack-leak"} {
+		if strings.Contains(out, forbiddenVal) {
+			t.Fatalf("denylisted value %q leaked into log output: %s", forbiddenVal, out)
+		}
+	}
+
+	secretPayloads := []struct {
+		name    string
+		payload string
+		secret  string
+	}{
+		{"x_access_token", "remote failed for x-access-token:ghs_supersecret12345", "ghs_supersecret12345"},
+		{"x_access_token_mixed_case", "auth failed: X-Access-Token:custom_broker_tok_9988", "custom_broker_tok_9988"},
+		{"oauth2_prefix", "oauth2:my_oauth_secret_token_99", "my_oauth_secret_token_99"},
+		{"access_token_kv", "redirect access_token=tok_secret_value_123&state=ok", "tok_secret_value_123"},
+		{"proxy_authorization", "Proxy-Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"},
+		{"ssh_ed25519_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKeyMaterialBlob12345", "AAAAC3NzaC1lZDI1NTE5"},
+		{"ssh_cert_blob", "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29t", "AAAAIHNzaC1lZDI1NTE5"},
+		{"ssh_dss_cert_blob", "ssh-dss-cert-v01@openssh.com AAAAB3NzaC1kc3NjZXJ0LXYwMUBvcGVuc3NoLmNvbQ==", "AAAAB3NzaC1kc3NjZXJ0"},
+		{"ssh_dss_cert_short", "ssh-dss-cert-v01@openssh.com AAAA1234", "AAAA1234"},
+		{"ecdsa_cert_blob", "ecdsa-sha2-nistp256-cert-v01@openssh.com AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYtY2VydC12MDFAb3BlbnNzaC5jb20=", "AAAAE2VjZHNh"},
+		{"sk_ed25519_key", "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t", "AAAAGnNrLXNzaC1lZDI1NTE5"},
+		{"sk_ecdsa_key", "sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20=", "AAAAInNrLWVjZHNh"},
+		{"sk_ed25519_cert_short", "sk-ssh-ed25519-cert-v01@openssh.com AAAA1234", "AAAA1234"},
+		{"sk_ecdsa_cert_short", "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com AAAA1234", "AAAA1234"},
+	}
+
+	for _, tc := range secretPayloads {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			logger.Error(tc.payload, "reason", tc.payload)
+			s := buf.String()
+			if strings.Contains(s, tc.secret) {
+				t.Fatalf("%s leaked secret %q in %s", tc.name, tc.secret, s)
+			}
+			var row map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &row); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			if row["msg"] != "[REDACTED]" || row["reason"] != "[REDACTED]" {
+				t.Fatalf("%s expected [REDACTED], got msg=%v reason=%v", tc.name, row["msg"], row["reason"])
+			}
+		})
+	}
+
+	t.Run("denylist_normalized_bypass_attempts", func(t *testing.T) {
+		var bypassBuf bytes.Buffer
+		bypassLogger := NewLogger(LoggerConfig{
+			Writer:    &bypassBuf,
+			Format:    LogFormatJSON,
+			Component: "custodian-git-gateway",
+			ExtraAllowlist: []string{
+				"rawBundle", "raw-bundle", "raw bundle",
+				"oidcToken", "brokerToken", "sshPrivateKey",
+				"xAccessToken", "privateKey", "clientSecret", "commitMessage",
+			},
+		})
+		bypassLogger.Info("bypass check",
+			"push_session_id", "ps_ok",
+			"rawBundle", "leak-raw-bundle",
+			"raw-bundle", "leak-raw-dash",
+			"raw bundle", "leak-raw-space",
+			"oidcToken", "leak-oidc",
+			"brokerToken", "leak-broker",
+			"sshPrivateKey", "leak-ssh-priv",
+			"xAccessToken", "leak-x-access",
+			"privateKey", "leak-priv-key",
+			"clientSecret", "leak-client-sec",
+			"commitMessage", "leak-commit-msg",
+			"raw_bundle", "leak-snake-bundle",
+			"oidc_token", "leak-snake-oidc",
+			slog.Group("sshPrivateKey", slog.String("workspace_id", "ws_grouped_drop")),
+		)
+		s := bypassBuf.String()
+		var parsed map[string]any
+		if err := json.Unmarshal(bypassBuf.Bytes(), &parsed); err != nil {
+			t.Fatalf("invalid JSON: %v\nraw: %s", err, s)
+		}
+		if parsed["push_session_id"] != "ps_ok" {
+			t.Fatalf("expected push_session_id=ps_ok, got %v", parsed["push_session_id"])
+		}
+		for _, k := range []string{
+			"rawBundle", "raw-bundle", "raw bundle", "oidcToken", "brokerToken",
+			"sshPrivateKey", "xAccessToken", "privateKey", "clientSecret", "commitMessage",
+			"raw_bundle", "oidc_token",
+		} {
+			if _, ok := parsed[k]; ok {
+				t.Fatalf("normalized denylist key %q leaked into log output: %s", k, s)
+			}
+		}
+		for _, val := range []string{
+			"leak-raw-bundle", "leak-raw-dash", "leak-raw-space", "leak-oidc", "leak-broker",
+			"leak-ssh-priv", "leak-x-access", "leak-priv-key", "leak-client-sec", "leak-commit-msg",
+			"leak-snake-bundle", "leak-snake-oidc", "ws_grouped_drop",
+		} {
+			if strings.Contains(s, val) {
+				t.Fatalf("normalized denylist value %q leaked into log output: %s", val, s)
+			}
+		}
+
+		bypassBuf.Reset()
+		bypassLogger.WithGroup("sshPrivateKey").Info("msg", "workspace_id", "ws_1")
+		if strings.Contains(bypassBuf.String(), "ws_1") || strings.Contains(bypassBuf.String(), "workspace_id") {
+			t.Fatalf("WithGroup denylisted camelCase group leaked child attr: %s", bypassBuf.String())
+		}
+	})
+
+	t.Run("non_redaction_preservation", func(t *testing.T) {
+		safeMsgs := []string{
+			"ssh://git@github.com/org/repo.git",
+			"https://github.com/org/repo.git",
+			"ssh-ed25519 authentication failed",
+		}
+		for _, msg := range safeMsgs {
+			buf.Reset()
+			logger.Info(msg, "reason", msg)
+			s := buf.String()
+			if strings.Contains(s, "[REDACTED]") {
+				t.Fatalf("safe payload %q was falsely redacted: %s", msg, s)
+			}
+			if !strings.Contains(s, msg) {
+				t.Fatalf("safe payload %q missing from output: %s", msg, s)
+			}
+		}
+	})
+}

@@ -1,0 +1,17 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: push-repo-illegal-override
+  version: "1.0.0"
+  scope: REPO
+defaults:
+  effect: DENY
+  onError: DENY
+rules:
+  - id: push.ip.restricted.block
+    description: Attempted repo-level override trying to allow restricted IP matches (must be blocked by ORG overridable=false).
+    stages: [PUSH_EGRESS]
+    when: findings.restricted_ip_matches > 0
+    effect: ALLOW
+    overridable: true
+    message: Attempted permissive override on restricted IP findings.

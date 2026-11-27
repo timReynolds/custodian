@@ -292,10 +292,12 @@ func (q *Queries) ListActivePolicyBundlesByScope(ctx context.Context, scope doma
 type CreatePolicyDecisionParams struct {
 	ID             uuid.UUID
 	ProposalID     uuid.UUID
+	PushSessionID  *uuid.UUID
 	PolicyBundleID uuid.UUID
 	OrgBundleID    *uuid.UUID
 	RepoBundleID   *uuid.UUID
 	Stage          string
+	Enforced       *bool
 	InputDigest    string
 	Effect         domain.PolicyEffect
 	Reasons        []domain.PolicyReason
@@ -305,14 +307,14 @@ type CreatePolicyDecisionParams struct {
 
 const createPolicyDecisionSQL = `
 INSERT INTO policy_decisions (
-    id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+    id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+RETURNING id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 `
 
 func validatePolicyStage(stage string) (string, error) {
@@ -320,16 +322,24 @@ func validatePolicyStage(stage string) (string, error) {
 		return "EGRESS", nil
 	}
 	switch stage {
-	case "INGRESS", "EGRESS":
+	case "INGRESS", "EGRESS", "PUSH_EGRESS":
 		return stage, nil
 	default:
-		return "", domain.BadRequest("INVALID_POLICY_STAGE", "stage must be INGRESS or EGRESS")
+		return "", domain.BadRequest("INVALID_POLICY_STAGE", "stage must be INGRESS, EGRESS, or PUSH_EGRESS")
 	}
 }
 
 func (q *Queries) CreatePolicyDecision(ctx context.Context, arg CreatePolicyDecisionParams) (PolicyDecisionRow, error) {
-	if arg.ProposalID == uuid.Nil || arg.PolicyBundleID == uuid.Nil {
-		return PolicyDecisionRow{}, domain.BadRequest("INVALID_POLICY_DECISION", "proposal_id and policy_bundle_id are required")
+	if arg.PushSessionID != nil && *arg.PushSessionID == uuid.Nil {
+		return PolicyDecisionRow{}, domain.BadRequest("INVALID_ID", "push_session_id must not be nil when provided")
+	}
+	hasProposal := arg.ProposalID != uuid.Nil
+	hasPush := arg.PushSessionID != nil && *arg.PushSessionID != uuid.Nil
+	if hasProposal == hasPush {
+		return PolicyDecisionRow{}, domain.BadRequest("INVALID_POLICY_DECISION", "exactly one of proposal_id or push_session_id is required")
+	}
+	if arg.PolicyBundleID == uuid.Nil {
+		return PolicyDecisionRow{}, domain.BadRequest("INVALID_POLICY_DECISION", "policy_bundle_id is required")
 	}
 	if arg.OrgBundleID != nil && *arg.OrgBundleID == uuid.Nil {
 		return PolicyDecisionRow{}, domain.BadRequest("INVALID_ID", "org_bundle_id must not be nil when provided")
@@ -340,6 +350,10 @@ func (q *Queries) CreatePolicyDecision(ctx context.Context, arg CreatePolicyDeci
 	stage, err := validatePolicyStage(arg.Stage)
 	if err != nil {
 		return PolicyDecisionRow{}, err
+	}
+	enforced := true
+	if arg.Enforced != nil {
+		enforced = *arg.Enforced
 	}
 	inputDigest, err := domain.ParseSHA256Digest(arg.InputDigest)
 	if err != nil {
@@ -386,14 +400,22 @@ func (q *Queries) CreatePolicyDecision(ctx context.Context, arg CreatePolicyDeci
 	}
 	createdAt := normalizeTimestamp(arg.CreatedAt)
 
+	var proposalIDArg *uuid.UUID
+	if hasProposal {
+		p := arg.ProposalID
+		proposalIDArg = &p
+	}
+
 	var row PolicyDecisionRow
 	err = scanPolicyDecisionRow(q.db.QueryRow(ctx, createPolicyDecisionSQL,
 		id,
-		arg.ProposalID,
+		proposalIDArg,
+		arg.PushSessionID,
 		arg.PolicyBundleID,
 		arg.OrgBundleID,
 		arg.RepoBundleID,
 		stage,
+		enforced,
 		inputDigest,
 		string(arg.Effect),
 		json.RawMessage(canonReasons),
@@ -407,8 +429,8 @@ func (q *Queries) CreatePolicyDecision(ctx context.Context, arg CreatePolicyDeci
 }
 
 const getPolicyDecisionByIDSQL = `
-SELECT id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 FROM policy_decisions
 WHERE id = $1
 `
@@ -426,8 +448,8 @@ func (q *Queries) GetPolicyDecisionByID(ctx context.Context, id uuid.UUID) (Poli
 }
 
 const listPolicyDecisionsByProposalSQL = `
-SELECT id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 FROM policy_decisions
 WHERE proposal_id = $1
 ORDER BY created_at DESC, id DESC
@@ -458,8 +480,8 @@ func (q *Queries) ListPolicyDecisionsByProposal(ctx context.Context, proposalID 
 }
 
 const getLatestPolicyDecisionForProposalSQL = `
-SELECT id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 FROM policy_decisions
 WHERE proposal_id = $1
 ORDER BY created_at DESC, id DESC
@@ -472,6 +494,59 @@ func (q *Queries) GetLatestPolicyDecisionForProposal(ctx context.Context, propos
 	}
 	var row PolicyDecisionRow
 	err := scanPolicyDecisionRow(q.db.QueryRow(ctx, getLatestPolicyDecisionForProposalSQL, proposalID), &row)
+	if err != nil {
+		return PolicyDecisionRow{}, MapError(err)
+	}
+	return row, nil
+}
+
+const listPolicyDecisionsByPushSessionSQL = `
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
+FROM policy_decisions
+WHERE push_session_id = $1
+ORDER BY created_at DESC, id DESC
+`
+
+func (q *Queries) ListPolicyDecisionsByPushSession(ctx context.Context, pushSessionID uuid.UUID) ([]PolicyDecisionRow, error) {
+	if pushSessionID == uuid.Nil {
+		return nil, domain.BadRequest("INVALID_ID", "push_session_id must not be nil")
+	}
+	rows, err := q.db.Query(ctx, listPolicyDecisionsByPushSessionSQL, pushSessionID)
+	if err != nil {
+		return nil, MapError(err)
+	}
+	defer rows.Close()
+
+	out := make([]PolicyDecisionRow, 0)
+	for rows.Next() {
+		var row PolicyDecisionRow
+		if err := scanPolicyDecisionRow(rows, &row); err != nil {
+			return nil, MapError(err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapError(err)
+	}
+	return out, nil
+}
+
+const getLatestPolicyDecisionForPushSessionSQL = `
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
+FROM policy_decisions
+WHERE push_session_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestPolicyDecisionForPushSession(ctx context.Context, pushSessionID uuid.UUID) (PolicyDecisionRow, error) {
+	if pushSessionID == uuid.Nil {
+		return PolicyDecisionRow{}, domain.BadRequest("INVALID_ID", "push_session_id must not be nil")
+	}
+	var row PolicyDecisionRow
+	err := scanPolicyDecisionRow(q.db.QueryRow(ctx, getLatestPolicyDecisionForPushSessionSQL, pushSessionID), &row)
 	if err != nil {
 		return PolicyDecisionRow{}, MapError(err)
 	}
@@ -500,14 +575,17 @@ func scanPolicyBundleRow(s rowScanner, row *PolicyBundleRow) error {
 }
 
 func scanPolicyDecisionRow(s rowScanner, row *PolicyDecisionRow) error {
+	var proposalID *uuid.UUID
 	var effect string
 	if err := s.Scan(
 		&row.ID,
-		&row.ProposalID,
+		&proposalID,
+		&row.PushSessionID,
 		&row.PolicyBundleID,
 		&row.OrgBundleID,
 		&row.RepoBundleID,
 		&row.Stage,
+		&row.Enforced,
 		&row.InputDigest,
 		&effect,
 		&row.Reasons,
@@ -515,6 +593,11 @@ func scanPolicyDecisionRow(s rowScanner, row *PolicyDecisionRow) error {
 		&row.CreatedAt,
 	); err != nil {
 		return err
+	}
+	if proposalID != nil {
+		row.ProposalID = *proposalID
+	} else {
+		row.ProposalID = uuid.Nil
 	}
 	row.Effect = domain.PolicyEffect(effect)
 	return nil

@@ -10,11 +10,12 @@ import (
 
 // BinaryNames maps logical Custodian components to executable names.
 type BinaryNames struct {
-	Custodian string `json:"custodian"`
-	API       string `json:"api"`
-	Worker    string `json:"worker"`
-	Publisher string `json:"publisher"`
-	Policy    string `json:"policy"`
+	Custodian  string `json:"custodian"`
+	API        string `json:"api"`
+	Worker     string `json:"worker"`
+	Publisher  string `json:"publisher"`
+	Policy     string `json:"policy"`
+	GitGateway string `json:"git_gateway"`
 }
 
 // StatusSet groups lifecycle status literals for polling and assertion helpers.
@@ -59,37 +60,52 @@ type AuditQueryConfig struct {
 	CursorParam       string `json:"cursor_param"`
 }
 
+// PushEndpointConfig defines relative /v1 paths for Push Gateway control-plane endpoints.
+type PushEndpointConfig struct {
+	PushesPath          string `json:"pushes_path"`
+	PushByIDPath        string `json:"push_by_id_path"`
+	PushApprovalsPath   string `json:"push_approvals_path"`
+	RepoEgressModePath  string `json:"repo_egress_mode_path"`
+	IPCorporaPath       string `json:"ip_corpora_path"`
+	IPCorpusReindexPath string `json:"ip_corpus_reindex_path"`
+}
+
 // CLIConfig centralizes CLI subcommand/flag conventions for custodian and custodian-policy.
 type CLIConfig struct {
-	PolicyValidateSubcommand []string          `json:"policy_validate_subcommand"`
-	PolicyEvaluateSubcommand []string          `json:"policy_evaluate_subcommand"`
-	PolicyTestSubcommand     []string          `json:"policy_test_subcommand"`
-	PolicyBundleFlag         string            `json:"policy_bundle_flag"`
-	PolicyInputFlag          string            `json:"policy_input_flag"`
-	ScannerBinEnvVars        map[string]string `json:"scanner_bin_env_vars"`
+	PolicyValidateSubcommand   []string          `json:"policy_validate_subcommand"`
+	PolicyEvaluateSubcommand   []string          `json:"policy_evaluate_subcommand"`
+	PolicyTestSubcommand       []string          `json:"policy_test_subcommand"`
+	CredentialHelperSubcommand []string          `json:"credential_helper_subcommand"`
+	PushSubcommand             []string          `json:"push_subcommand"`
+	PushStatusSubcommand       []string          `json:"push_status_subcommand"`
+	PolicyBundleFlag           string            `json:"policy_bundle_flag"`
+	PolicyInputFlag            string            `json:"policy_input_flag"`
+	ScannerBinEnvVars          map[string]string `json:"scanner_bin_env_vars"`
 }
 
 // Contracts centralizes all OpenAPI-bound and binary-bound wire details so E2E tests
 // can synchronize with api/openapi.yaml and cmd/* without rewriting test assertions.
 type Contracts struct {
 	// REST API Paths & Transport
-	APIBasePath                string `json:"api_base_path"`
-	HealthPath                 string `json:"health_path"`
-	ReadyPath                  string `json:"ready_path"`
-	MetricsPath                string `json:"metrics_path"`
-	SourceDownloadMode         string `json:"source_download_mode"` // "auto" | "descriptor_then_get" | "direct_binary"
-	UploadCapabilityMethod     string `json:"upload_capability_method"`
-	UploadCapabilityHeader     string `json:"upload_capability_header"`
-	UploadCapabilityBearer     bool   `json:"upload_capability_bearer"`
-	UploadCapabilityURLField   string `json:"upload_capability_url_field"`
-	UploadCapabilityEndpoint   string `json:"upload_capability_endpoint"`
-	OptimisticVersionTransport string `json:"optimistic_version_transport"` // "both" | "body" | "if_match_header"
+	APIBasePath                string             `json:"api_base_path"`
+	HealthPath                 string             `json:"health_path"`
+	ReadyPath                  string             `json:"ready_path"`
+	MetricsPath                string             `json:"metrics_path"`
+	SourceDownloadMode         string             `json:"source_download_mode"` // "auto" | "descriptor_then_get" | "direct_binary"
+	UploadCapabilityMethod     string             `json:"upload_capability_method"`
+	UploadCapabilityHeader     string             `json:"upload_capability_header"`
+	UploadCapabilityBearer     bool               `json:"upload_capability_bearer"`
+	UploadCapabilityURLField   string             `json:"upload_capability_url_field"`
+	UploadCapabilityEndpoint   string             `json:"upload_capability_endpoint"`
+	OptimisticVersionTransport string             `json:"optimistic_version_transport"` // "both" | "body" | "if_match_header"
+	PushEndpoints              PushEndpointConfig `json:"push_endpoints"`
 
 	// Status Enums
 	WorkspaceStatuses   StatusSet         `json:"workspace_statuses"`
 	ProposalStatuses    ProposalStatusSet `json:"proposal_statuses"`
 	OperationStatuses   StatusSet         `json:"operation_statuses"`
 	PublicationStatuses StatusSet         `json:"publication_statuses"`
+	PushStatuses        StatusSet         `json:"push_statuses"`
 
 	// Query Parameter Names
 	AuditQueryParams AuditQueryConfig `json:"audit_query_params"`
@@ -124,9 +140,26 @@ type Contracts struct {
 	EnvLogLevel          string      `json:"env_log_level"`
 	EnvPolicyBundleDir   string      `json:"env_policy_bundle_dir"`
 
-	APIArgs       []string `json:"api_args"`
-	WorkerArgs    []string `json:"worker_args"`
-	PublisherArgs []string `json:"publisher_args"`
+	// Push Gateway Environment Variables
+	EnvGitGatewayHTTPAddr          string `json:"env_git_gateway_http_addr"`
+	EnvGitGatewaySSHAddr           string `json:"env_git_gateway_ssh_addr"`
+	EnvGitGatewayTLSCertFile       string `json:"env_git_gateway_tls_cert_file"`
+	EnvGitGatewayTLSKeyFile        string `json:"env_git_gateway_tls_key_file"`
+	EnvGitGatewaySSHHostKeyFile    string `json:"env_git_gateway_ssh_host_key_file"`
+	EnvGitGatewaySSHUserCAFile     string `json:"env_git_gateway_ssh_user_ca_file"`
+	EnvGitGatewayUpstreamURL       string `json:"env_git_gateway_upstream_url"`
+	EnvGitGatewayAPIBaseURL        string `json:"env_git_gateway_api_base_url"`
+	EnvGitGatewayMaxPackBytes      string `json:"env_git_gateway_max_pack_bytes"`
+	EnvGitGatewayMaxObjects        string `json:"env_git_gateway_max_objects"`
+	EnvGitGatewayMaxInflatedBytes  string `json:"env_git_gateway_max_inflated_bytes"`
+	EnvGitGatewayMaxRefUpdates     string `json:"env_git_gateway_max_ref_updates"`
+	EnvGitGatewayDefaultEgressMode string `json:"env_git_gateway_default_egress_mode"`
+	EnvGitGatewayPassiveDelivery   string `json:"env_git_gateway_passive_delivery"`
+
+	APIArgs        []string `json:"api_args"`
+	WorkerArgs     []string `json:"worker_args"`
+	PublisherArgs  []string `json:"publisher_args"`
+	GitGatewayArgs []string `json:"git_gateway_args,omitempty"`
 
 	// CLI Subcommands & Flags
 	CLI CLIConfig `json:"cli"`
@@ -145,6 +178,14 @@ func DefaultContracts() *Contracts {
 		UploadCapabilityBearer:     true,
 		UploadCapabilityURLField:   "upload_url",
 		OptimisticVersionTransport: "both",
+		PushEndpoints: PushEndpointConfig{
+			PushesPath:          "/pushes",
+			PushByIDPath:        "/pushes/{id}",
+			PushApprovalsPath:   "/pushes/{id}/approvals",
+			RepoEgressModePath:  "/repositories/{id}/egress-mode",
+			IPCorporaPath:       "/ip-corpora",
+			IPCorpusReindexPath: "/ip-corpora/{id}/reindex",
+		},
 
 		WorkspaceStatuses: StatusSet{
 			Pending:         "PENDING",
@@ -180,6 +221,14 @@ func DefaultContracts() *Contracts {
 			TerminalSuccess: []string{"PUBLISHED", "COMPLETED", "SUCCEEDED"},
 			TerminalFailure: []string{"FAILED", "ABORTED"},
 		},
+		PushStatuses: StatusSet{
+			Pending:         "RECEIVED",
+			Ready:           "ALLOWED",
+			TerminalSuccess: []string{"ALLOWED", "FORWARDED", "PUBLISHED", "COMPLETED"},
+			TerminalFailure: []string{"DENIED", "BLOCKED", "QUARANTINED", "FAILED", "REJECTED"},
+			Denied:          "DENIED",
+			Quarantined:     "QUARANTINED",
+		},
 
 		AuditQueryParams: AuditQueryConfig{
 			ResourceTypeParam: "resource_type",
@@ -198,40 +247,58 @@ func DefaultContracts() *Contracts {
 		ScannerSkippedMode:      "native",
 
 		Binaries: BinaryNames{
-			Custodian: "custodian",
-			API:       "custodian-api",
-			Worker:    "custodian-worker",
-			Publisher: "custodian-publisher",
-			Policy:    "custodian-policy",
+			Custodian:  "custodian",
+			API:        "custodian-api",
+			Worker:     "custodian-worker",
+			Publisher:  "custodian-publisher",
+			Policy:     "custodian-policy",
+			GitGateway: "custodian-git-gateway",
 		},
-		EnvListenAddr:        "CUSTODIAN_LISTEN_ADDR",
-		EnvDatabaseDSN:       "CUSTODIAN_DATABASE_URL",
-		EnvOIDCIssuer:        "CUSTODIAN_OIDC_ISSUER",
-		EnvOIDCJWKSURL:       "CUSTODIAN_OIDC_JWKS_URL",
-		EnvOIDCAudience:      "CUSTODIAN_OIDC_AUDIENCE",
-		EnvGitHubAPIBaseURL:  "CUSTODIAN_GITHUB_API_URL",
-		EnvGitHubReadAppID:   "CUSTODIAN_GITHUB_READ_APP_ID",
-		EnvGitHubReadKeyPEM:  "CUSTODIAN_GITHUB_READ_PRIVATE_KEY_PEM",
-		EnvGitHubWriteAppID:  "CUSTODIAN_GITHUB_WRITE_APP_ID",
-		EnvGitHubWriteKeyPEM: "CUSTODIAN_GITHUB_WRITE_PRIVATE_KEY_PEM",
-		EnvSnapshotStoreRoot: "CUSTODIAN_SNAPSHOT_DIR",
-		EnvSnapshotStoreKind: "CUSTODIAN_SNAPSHOT_STORE",
-		EnvModelGatewayURL:   "CUSTODIAN_MODEL_GATEWAY_URL",
-		EnvCapabilitySecret:  "CUSTODIAN_CAPABILITY_HMAC_SECRET",
-		EnvRepoConcurrency:   "CUSTODIAN_REPO_CONCURRENCY_LIMIT",
-		EnvGlobalScanBudget:  "CUSTODIAN_GLOBAL_SCAN_BUDGET",
-		EnvGlobalModelBudget: "CUSTODIAN_GLOBAL_MODEL_BUDGET",
-		EnvArtifactRetention: "CUSTODIAN_ARTIFACT_RETENTION_TTL",
-		EnvLogFormat:         "CUSTODIAN_LOG_FORMAT",
-		EnvLogLevel:          "CUSTODIAN_LOG_LEVEL",
-		EnvPolicyBundleDir:   "CUSTODIAN_POLICY_DIR",
+		EnvListenAddr:                  "CUSTODIAN_LISTEN_ADDR",
+		EnvDatabaseDSN:                 "CUSTODIAN_DATABASE_URL",
+		EnvOIDCIssuer:                  "CUSTODIAN_OIDC_ISSUER",
+		EnvOIDCJWKSURL:                 "CUSTODIAN_OIDC_JWKS_URL",
+		EnvOIDCAudience:                "CUSTODIAN_OIDC_AUDIENCE",
+		EnvGitHubAPIBaseURL:            "CUSTODIAN_GITHUB_API_URL",
+		EnvGitHubReadAppID:             "CUSTODIAN_GITHUB_READ_APP_ID",
+		EnvGitHubReadKeyPEM:            "CUSTODIAN_GITHUB_READ_PRIVATE_KEY_PEM",
+		EnvGitHubWriteAppID:            "CUSTODIAN_GITHUB_WRITE_APP_ID",
+		EnvGitHubWriteKeyPEM:           "CUSTODIAN_GITHUB_WRITE_PRIVATE_KEY_PEM",
+		EnvSnapshotStoreRoot:           "CUSTODIAN_SNAPSHOT_DIR",
+		EnvSnapshotStoreKind:           "CUSTODIAN_SNAPSHOT_STORE",
+		EnvModelGatewayURL:             "CUSTODIAN_MODEL_GATEWAY_URL",
+		EnvCapabilitySecret:            "CUSTODIAN_CAPABILITY_HMAC_SECRET",
+		EnvRepoConcurrency:             "CUSTODIAN_REPO_CONCURRENCY_LIMIT",
+		EnvGlobalScanBudget:            "CUSTODIAN_GLOBAL_SCAN_BUDGET",
+		EnvGlobalModelBudget:           "CUSTODIAN_GLOBAL_MODEL_BUDGET",
+		EnvArtifactRetention:           "CUSTODIAN_ARTIFACT_RETENTION_TTL",
+		EnvLogFormat:                   "CUSTODIAN_LOG_FORMAT",
+		EnvLogLevel:                    "CUSTODIAN_LOG_LEVEL",
+		EnvPolicyBundleDir:             "CUSTODIAN_POLICY_DIR",
+		EnvGitGatewayHTTPAddr:          "CUSTODIAN_GIT_GATEWAY_HTTP_ADDR",
+		EnvGitGatewaySSHAddr:           "CUSTODIAN_GIT_GATEWAY_SSH_ADDR",
+		EnvGitGatewayTLSCertFile:       "CUSTODIAN_GIT_GATEWAY_TLS_CERT_FILE",
+		EnvGitGatewayTLSKeyFile:        "CUSTODIAN_GIT_GATEWAY_TLS_KEY_FILE",
+		EnvGitGatewaySSHHostKeyFile:    "CUSTODIAN_GIT_GATEWAY_SSH_HOST_KEY_FILE",
+		EnvGitGatewaySSHUserCAFile:     "CUSTODIAN_GIT_GATEWAY_SSH_USER_CA_FILE",
+		EnvGitGatewayUpstreamURL:       "CUSTODIAN_GIT_GATEWAY_UPSTREAM_URL",
+		EnvGitGatewayAPIBaseURL:        "CUSTODIAN_GIT_GATEWAY_API_BASE_URL",
+		EnvGitGatewayMaxPackBytes:      "CUSTODIAN_GIT_GATEWAY_MAX_PACK_BYTES",
+		EnvGitGatewayMaxObjects:        "CUSTODIAN_GIT_GATEWAY_MAX_OBJECTS",
+		EnvGitGatewayMaxInflatedBytes:  "CUSTODIAN_GIT_GATEWAY_MAX_INFLATED_BYTES",
+		EnvGitGatewayMaxRefUpdates:     "CUSTODIAN_GIT_GATEWAY_MAX_REF_UPDATES",
+		EnvGitGatewayDefaultEgressMode: "CUSTODIAN_GIT_GATEWAY_DEFAULT_EGRESS_MODE",
+		EnvGitGatewayPassiveDelivery:   "CUSTODIAN_GIT_GATEWAY_PASSIVE_DELIVERY",
 
 		CLI: CLIConfig{
-			PolicyValidateSubcommand: []string{"validate"},
-			PolicyEvaluateSubcommand: []string{"evaluate"},
-			PolicyTestSubcommand:     []string{"test"},
-			PolicyBundleFlag:         "--bundle",
-			PolicyInputFlag:          "--input",
+			PolicyValidateSubcommand:   []string{"validate"},
+			PolicyEvaluateSubcommand:   []string{"evaluate"},
+			PolicyTestSubcommand:       []string{"test"},
+			CredentialHelperSubcommand: []string{"credential-helper"},
+			PushSubcommand:             []string{"push"},
+			PushStatusSubcommand:       []string{"push", "status"},
+			PolicyBundleFlag:           "--bundle",
+			PolicyInputFlag:            "--input",
 			ScannerBinEnvVars: map[string]string{
 				"gitleaks": "CUSTODIAN_GITLEAKS_BIN",
 				"scancode": "CUSTODIAN_SCANCODE_BIN",

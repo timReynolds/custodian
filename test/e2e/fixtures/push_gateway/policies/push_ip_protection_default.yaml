@@ -1,0 +1,154 @@
+apiVersion: custodian.dev/v1
+kind: PolicyBundle
+metadata:
+  name: push-ip-protection
+  version: "1.0.0"
+  scope: ORG
+defaults:
+  effect: DENY
+  onError: DENY
+inspection:
+  mandatory:
+    - gitleaks
+    - scancode
+    - semgrep
+  decisionModel:
+    route: approved-code-review
+    trigger:
+      - restricted_ip_finding
+      - concealment_finding
+      - high_risk_change
+      - restricted_repository
+rules:
+  - id: push.secrets.block
+    description: Block any critical secret finding on push egress.
+    stages: [PUSH_EGRESS]
+    when: findings.critical_secrets > 0
+    effect: DENY
+    overridable: false
+    message: Critical secret detected by deterministic inspection.
+  - id: push.licenses.block
+    description: Block prohibited license findings on push egress.
+    stages: [PUSH_EGRESS]
+    when: findings.prohibited_licenses > 0
+    effect: DENY
+    overridable: false
+    message: Prohibited software license detected by deterministic inspection.
+  - id: push.ip.restricted.block
+    description: Block restricted proprietary IP fingerprint matches on push egress.
+    stages: [PUSH_EGRESS]
+    when: findings.restricted_ip_matches > 0
+    effect: DENY
+    overridable: false
+    message: Restricted proprietary IP fingerprint match detected.
+  - id: push.ip.header_strip.block
+    description: Block pushes where proprietary copyright or confidentiality headers were stripped.
+    stages: [PUSH_EGRESS]
+    when: findings.ip_header_strip_matches > 0
+    effect: DENY
+    overridable: false
+    message: Proprietary copyright or confidentiality header stripping detected.
+  - id: push.concealment.quarantine
+    description: Quarantine pushes containing concealed, obfuscated, or nested-archive payloads.
+    stages: [PUSH_EGRESS]
+    when: findings.concealment_findings > 0
+    effect: QUARANTINE
+    overridable: false
+    message: Concealment or smuggling indicator detected during inspection.
+  - id: push.scan.incomplete
+    description: Quarantine pushes when mandatory scanners did not complete with full coverage.
+    stages: [PUSH_EGRESS]
+    when: "!findings.scan_complete"
+    effect: QUARANTINE
+    overridable: false
+    message: Mandatory deterministic inspection did not complete with full coverage.
+  # ORG-level CEL override semantics:
+  # `overridable: true` permits a REPO bundle rule with the same ID only when its
+  # effect rank is >= DENY (i.e. another DENY rule with a repo-specific message).
+  # Because ComposeAndEvaluate enforces `repoEffect.Rank() >= orgEffect.Rank()`,
+  # a REPO bundle CANNOT weaken DENY (Rank 5) to REQUIRE_APPROVAL or ALLOW, and
+  # `push.allow` independently requires `destination.registered && !destination.external`.
+  # To permit an approved external/unregistered mirror (e.g. a partner host),
+  # customize or replace this ORG bundle's CEL expressions in `push.destination.unregistered_or_external`
+  # and `push.allow` rather than deploying a REPO-level override.
+  - id: push.destination.unregistered_or_external
+    description: Deny pushes to unregistered or external Git destinations by default (customizable via ORG-bundle CEL).
+    stages: [PUSH_EGRESS]
+    when: "!destination.registered || destination.external"
+    effect: DENY
+    overridable: true
+    message: Destination repository is unregistered or external.
+  - id: push.model.block
+    description: Deny pushes when Stage B contextual assessment disposition is BLOCK.
+    stages: [PUSH_EGRESS]
+    when: assessment.disposition == "BLOCK"
+    effect: DENY
+    overridable: false
+    message: Contextual decision model blocked push egress.
+  - id: push.model.indeterminate
+    description: Quarantine pushes when Stage B contextual assessment status/disposition is missing, failed, indeterminate, or mismatched.
+    stages: [PUSH_EGRESS]
+    when: >-
+      !(
+        (assessment.status == "COMPLETE" && assessment.disposition in ["CLEAR", "REVIEW", "ESCALATE", "BLOCK"]) ||
+        (assessment.status == "NOT_REQUIRED" && assessment.disposition in ["NOT_REQUIRED", "", "CLEAR"])
+      )
+    effect: QUARANTINE
+    overridable: false
+    message: Contextual decision model assessment is incomplete, indeterminate, or has an invalid status/disposition pair.
+  - id: push.ip.confidential.review
+    description: Require dedicated IP review when confidential IP or fingerprint matches are detected.
+    stages: [PUSH_EGRESS]
+    when: findings.confidential_ip_matches > 0 || findings.ip_exact_matches > 0 || findings.ip_winnow_matches > 0
+    effect: REQUIRE_APPROVAL
+    overridable: false
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: ip-review
+        minimum: 1
+    message: Confidential IP fingerprint match requires IP reviewer approval.
+  - id: push.ip.review
+    description: Require dedicated IP review when contextual IP risk is HIGH or CRITICAL, or IP provenance requests review/escalation.
+    stages: [PUSH_EGRESS]
+    when: >-
+      assessment.ip_risk in ["HIGH", "CRITICAL"] ||
+      (assessment.assessment_type == "IP_PROVENANCE" && assessment.status == "COMPLETE" && assessment.disposition in ["REVIEW", "ESCALATE"])
+    effect: REQUIRE_APPROVAL
+    overridable: false
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: ip-review
+        minimum: 1
+    message: High/critical IP provenance risk or IP provenance review disposition requires IP reviewer approval.
+  - id: push.model.review
+    description: Require human security review when Stage B contextual assessment is COMPLETE with disposition REVIEW or ESCALATE, or reports HIGH/CRITICAL risk.
+    stages: [PUSH_EGRESS]
+    when: >-
+      (assessment.status == "COMPLETE" && assessment.disposition in ["REVIEW", "ESCALATE"]) ||
+      assessment.risk in ["HIGH", "CRITICAL"]
+    effect: REQUIRE_APPROVAL
+    overridable: false
+    obligations:
+      - type: HUMAN_REVIEW
+        reviewer_group: security-team
+        minimum: 1
+    message: Contextual decision model requires human review before push egress.
+  - id: push.allow
+    description: Allow clean push egress to registered internal destinations when Stage B is COMPLETE+CLEAR or validly NOT_REQUIRED.
+    stages: [PUSH_EGRESS]
+    when: >-
+      findings.scan_complete &&
+      findings.critical_secrets == 0 &&
+      findings.prohibited_licenses == 0 &&
+      findings.restricted_ip_matches == 0 &&
+      findings.ip_header_strip_matches == 0 &&
+      findings.concealment_findings == 0 &&
+      destination.registered &&
+      !destination.external &&
+      (
+        (assessment.status == "COMPLETE" && assessment.disposition == "CLEAR") ||
+        (assessment.status == "NOT_REQUIRED" && assessment.disposition in ["NOT_REQUIRED", "", "CLEAR"])
+      ) &&
+      !(assessment.ip_risk in ["HIGH", "CRITICAL"]) &&
+      !(assessment.risk in ["HIGH", "CRITICAL"])
+    effect: ALLOW

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,9 @@ import (
 )
 
 const fallbackGoBin = "/Users/tim/Code/github.com/timreynolds/forge/data/kind/tools/go/bin/go"
+
+// PushGatewayBinary is the conditional v1.x Push Gateway daemon binary name.
+const PushGatewayBinary = "custodian-git-gateway"
 
 // AllBinaryNames returns the canonical 5 Custodian binary names.
 var AllBinaryNames = []string{
@@ -194,6 +198,124 @@ func BuildOrLocateBinaries(ctx context.Context, goBin, repoRoot, outDir, prebuil
 	return cp, nil
 }
 
+// HasBinary reports whether binary name is available in prebuiltDir/$CUSTODIAN_E2E_BIN_DIR
+// or has buildable Go source under <repoRoot>/cmd/<name>.
+func HasBinary(repoRoot, prebuiltDir, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if prebuiltDir == "" {
+		prebuiltDir = strings.TrimSpace(os.Getenv("CUSTODIAN_E2E_BIN_DIR"))
+	}
+	if prebuiltDir != "" {
+		if info, err := os.Stat(filepath.Join(prebuiltDir, name)); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	if repoRoot == "" {
+		repoRoot = detectRepoRoot("")
+	}
+	if repoRoot == "" {
+		return false
+	}
+	cmdDir := filepath.Join(repoRoot, "cmd", name)
+	info, err := os.Stat(cmdDir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(cmdDir)
+	if err != nil {
+		return false
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() && strings.HasSuffix(ent.Name(), ".go") {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildBinary locates a single prebuilt binary from prebuiltDir/$CUSTODIAN_E2E_BIN_DIR
+// or builds ./cmd/<name> once per (repoRoot, name).
+func BuildBinary(ctx context.Context, goBin, repoRoot, outDir, prebuiltDir, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("binary name is required")
+	}
+	if prebuiltDir == "" {
+		prebuiltDir = strings.TrimSpace(os.Getenv("CUSTODIAN_E2E_BIN_DIR"))
+	}
+	if prebuiltDir != "" {
+		p := filepath.Join(prebuiltDir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p, nil
+		}
+	}
+
+	if goBin == "" {
+		var err error
+		goBin, err = ResolveGoBin()
+		if err != nil {
+			return "", err
+		}
+	}
+	if repoRoot == "" {
+		repoRoot = detectRepoRoot("")
+	}
+	if repoRoot == "" {
+		return "", errors.New("repoRoot is required when prebuilt binary is not provided")
+	}
+
+	cmdDir := filepath.Join(repoRoot, "cmd", name)
+	if info, err := os.Stat(cmdDir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("binary %q source directory %q not found", name, cmdDir)
+	}
+
+	cacheKey := "single|" + repoRoot + "|" + name
+	entry := getCacheEntry(cacheKey)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if cachedPath, ok := entry.paths[name]; ok && cachedPath != "" {
+		if info, err := os.Stat(cachedPath); err == nil && !info.IsDir() {
+			return cachedPath, nil
+		}
+	}
+
+	if outDir == "" {
+		var err error
+		outDir, err = os.MkdirTemp("", "custodian-e2e-bin-*")
+		if err != nil {
+			return "", fmt.Errorf("create temp binary dir: %w", err)
+		}
+	} else if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir outDir %q: %w", outDir, err)
+	}
+
+	dst := filepath.Join(outDir, name)
+	pkg := "./cmd/" + name
+	cmd := exec.CommandContext(ctx, goBin, "build", "-o", dst, pkg)
+	cmd.Dir = repoRoot
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("build %s (%s): %w\n%s", name, pkg, err, combined.String())
+	}
+	entry.paths = map[string]string{name: dst}
+	return dst, nil
+}
+
+// BuildPushGatewayBinary locates or builds custodian-git-gateway (or contracts.Binaries.GitGateway).
+func BuildPushGatewayBinary(ctx context.Context, goBin, repoRoot, outDir, prebuiltDir string, names ...BinaryNames) (string, error) {
+	target := PushGatewayBinary
+	if len(names) > 0 && strings.TrimSpace(names[0].GitGateway) != "" {
+		target = strings.TrimSpace(names[0].GitGateway)
+	}
+	return BuildBinary(ctx, goBin, repoRoot, outDir, prebuiltDir, target)
+}
+
 // cleanBaseEnv constructs a sanitized subprocess environment with hardened Git defaults.
 func cleanBaseEnv(extra map[string]string) []string {
 	merged := map[string]string{
@@ -221,12 +343,30 @@ func cleanBaseEnv(extra map[string]string) []string {
 
 // RunBinary invokes a CLI binary (custodian, custodian-policy, etc.) capturing exit code, stdout, and stderr.
 func RunBinary(ctx context.Context, binPath, workDir string, args []string, env map[string]string) CLIResult {
+	return RunBinaryWithStdin(ctx, binPath, workDir, args, env, nil)
+}
+
+// RunBinaryWithStdin invokes a CLI binary with optional stdin, capturing exit code, stdout, and stderr.
+func RunBinaryWithStdin(ctx context.Context, binPath, workDir string, args []string, env map[string]string, stdin io.Reader) CLIResult {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
 	cmd.Env = cleanBaseEnv(env)
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return err
+			}
+		}
+		return nil
+	}
+	cmd.WaitDelay = 200 * time.Millisecond
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

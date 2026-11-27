@@ -8,7 +8,8 @@ Usage: test/e2e/run_e2e.sh [OPTIONS]
 Opaque-box E2E test runner for Custodian.
 
 Options:
-  --tier=1|2|3|4|all   Select E2E tier to execute (default: all)
+  --tier=1|2|3|4|all   Select E2E tier to execute (default: all; includes TestT*_PG_* tests)
+  --push-gateway       Run only Push Gateway E2E tests (^TestT[1-4]_PG_* / ^TestT<N>_PG_*)
   --harness-only       Run only the harness self-tests (./test/e2e/harness/...)
   --compile-only       Run go vet, import isolation check, and go test -c without executing tests
   -v, --verbose        Pass -v to go test (enabled by default)
@@ -17,6 +18,7 @@ EOF
 }
 
 TIER="all"
+PUSH_GATEWAY=0
 HARNESS_ONLY=0
 COMPILE_ONLY=0
 VERBOSE=1
@@ -37,6 +39,10 @@ while [ $# -gt 0 ]; do
       ;;
     --harness-only)
       HARNESS_ONLY=1
+      shift
+      ;;
+    --push-gateway)
+      PUSH_GATEWAY=1
       shift
       ;;
     --compile-only)
@@ -128,7 +134,30 @@ PKG="./test/e2e/..."
 RUN_ARGS=()
 
 if [ "$HARNESS_ONLY" -eq 1 ]; then
+  if [ "$PUSH_GATEWAY" -eq 1 ]; then
+    echo "error: --harness-only and --push-gateway cannot be combined" >&2
+    exit 2
+  fi
   PKG="./test/e2e/harness/..."
+elif [ "$PUSH_GATEWAY" -eq 1 ]; then
+  PKG="./test/e2e"
+  case "$TIER" in
+    1)
+      RUN_ARGS=(-run '^TestT1_PG_')
+      ;;
+    2)
+      RUN_ARGS=(-run '^TestT2_PG_')
+      ;;
+    3)
+      RUN_ARGS=(-run '^TestT3_PG_')
+      ;;
+    4)
+      RUN_ARGS=(-run '^TestT4_PG_')
+      ;;
+    all)
+      RUN_ARGS=(-run '^TestT[1-4]_PG_')
+      ;;
+  esac
 else
   case "$TIER" in
     1)
@@ -179,10 +208,18 @@ if [ "$HARNESS_ONLY" -eq 0 ] && [ -z "${CUSTODIAN_E2E_BIN_DIR:-}" ]; then
   for bin in custodian custodian-api custodian-worker custodian-publisher custodian-policy; do
     "$GO_BIN" build -o "$PREBUILT_BIN_DIR/$bin" "./cmd/$bin"
   done
+  if [ -d "./cmd/custodian-git-gateway" ] && ls ./cmd/custodian-git-gateway/*.go >/dev/null 2>&1; then
+    "$GO_BIN" build -o "$PREBUILT_BIN_DIR/custodian-git-gateway" "./cmd/custodian-git-gateway"
+  fi
   export CUSTODIAN_E2E_BIN_DIR="$PREBUILT_BIN_DIR"
 fi
 
-TEST_FLAGS=(-count=1 -timeout=30m)
+DEFAULT_TIMEOUT="30m"
+if [ "$TIER" = "all" ] && [ "$PUSH_GATEWAY" -eq 0 ] && [ "$HARNESS_ONLY" -eq 0 ]; then
+  DEFAULT_TIMEOUT="60m"
+fi
+TEST_TIMEOUT="${CUSTODIAN_E2E_TIMEOUT:-$DEFAULT_TIMEOUT}"
+TEST_FLAGS=(-count=1 -timeout="$TEST_TIMEOUT")
 if [ "$VERBOSE" -eq 1 ]; then
   TEST_FLAGS+=(-v)
 fi

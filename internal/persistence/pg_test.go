@@ -115,6 +115,7 @@ func TestMigrationsUpDownAndSchemaVerificationPG17(t *testing.T) {
 		"scan_runs", "findings", "model_assessments", "policy_bundles", "policy_decisions",
 		"approvals", "publications", "operations", "audit_events", "outbox_events",
 		"idempotency_keys", "approval_requirements", "publication_attempts", "audit_chain_head",
+		"push_sessions", "push_approval_releases", "ip_fingerprint_corpora", "ip_fingerprints",
 	}
 
 	rows, err := pool.Query(ctx, `
@@ -157,7 +158,10 @@ func TestMigrationsUpDownAndSchemaVerificationPG17(t *testing.T) {
 	}
 	idxRows.Close()
 
-	for _, idx := range []string{"idx_proposals_workspace", "idx_findings_scan", "idx_operations_ready", "idx_audit_resource"} {
+	for _, idx := range []string{
+		"idx_proposals_workspace", "idx_findings_scan", "idx_operations_ready", "idx_audit_resource",
+		"idx_push_sessions_principal", "idx_push_approval_releases_active_binding", "idx_ip_fingerprints_lookup",
+	} {
 		if !idxSet[idx] {
 			t.Fatalf("missing Spec §10 index %q", idx)
 		}
@@ -203,8 +207,8 @@ func TestMigrationsUpDownAndSchemaVerificationPG17(t *testing.T) {
 	`).Scan(&restored); err != nil {
 		t.Fatalf("count restored tables: %v", err)
 	}
-	if restored != 19 {
-		t.Fatalf("expected 19 domain tables after re-up, got %d", restored)
+	if restored != 23 {
+		t.Fatalf("expected 23 domain tables after re-up, got %d", restored)
 	}
 
 	// Verify repositories.full_name CHECK rejects malformed names and accepts "org/repo".

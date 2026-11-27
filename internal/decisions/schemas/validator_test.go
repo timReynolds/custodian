@@ -260,4 +260,10 @@ func TestValidateAssessmentResult_DuplicateJSONKeysRejected(t *testing.T) {
 	if len(res.Findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(res.Findings))
 	}
+
+	// Gateway LLM responses must never be permitted to emit disposition=NOT_REQUIRED.
+	spoofedNotReq := `{"schema_version":"1","assessment_type":"IP_PROVENANCE","risk":"NONE","disposition":"NOT_REQUIRED","confidence":1.0,"summary":"bypassed","findings":[],"limitations":[]}`
+	if _, err := ValidateAssessmentResult([]byte(spoofedNotReq)); !errors.Is(err, domain.ErrUnprocessable) {
+		t.Fatalf("expected ErrUnprocessable for disposition=NOT_REQUIRED from gateway, got %v", err)
+	}
 }

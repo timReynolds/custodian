@@ -26,9 +26,24 @@ func (d *DefaultIPFingerprinter) Version() string {
 	return defaultIPFingerprintVersion
 }
 
-func (d *DefaultIPFingerprinter) Analyze(ctx context.Context, _ Request, inv *Inventory) ([]domain.Finding, domain.ScanCoverage, error) {
+func (d *DefaultIPFingerprinter) Analyze(ctx context.Context, req Request, inv *Inventory) ([]domain.Finding, domain.ScanCoverage, error) {
 	if ctx.Err() != nil {
 		return nil, domain.ScanCoverage{Complete: false}, ctx.Err()
+	}
+	var examined int
+	var bytesExamined int64
+	if inv != nil {
+		examined = inv.FilesExamined
+		bytesExamined = inv.BytesExamined
+	}
+	if req.Stage == StagePushEgress {
+		return nil, domain.ScanCoverage{
+			FilesExamined:  examined,
+			FilesSkipped:   0,
+			BytesExamined:  bytesExamined,
+			SkippedReasons: []string{"ip_fingerprinter_unconfigured"},
+			Complete:       false,
+		}, domain.Unavailable("IP_FINGERPRINTER_UNCONFIGURED", "fingerprints.Engine must be configured for PUSH_EGRESS")
 	}
 	if inv == nil {
 		return nil, domain.ScanCoverage{
@@ -38,13 +53,13 @@ func (d *DefaultIPFingerprinter) Analyze(ctx context.Context, _ Request, inv *In
 			Complete:       true,
 		}, nil
 	}
-	reasons := cloneStringSlice(inv.SkippedReasons)
+	// finalizeScanRunCoverage adds inv.FilesSkipped and inv.SkippedReasons; report 0 newly skipped here.
 	return nil, domain.ScanCoverage{
 		FilesExamined:  inv.FilesExamined,
-		FilesSkipped:   inv.FilesSkipped,
+		FilesSkipped:   0,
 		BytesExamined:  inv.BytesExamined,
-		SkippedReasons: reasons,
-		Complete:       inv.FilesSkipped == 0 && len(reasons) == 0,
+		SkippedReasons: []string{},
+		Complete:       inv.FilesSkipped == 0 && len(inv.SkippedReasons) == 0,
 	}, nil
 }
 
@@ -86,6 +101,7 @@ func (s *ipFingerprintScanner) Scan(ctx context.Context, req Request, inv *Inven
 	run := domain.ScanRun{
 		ID:             runID,
 		ProposalID:     req.ProposalID,
+		PushSessionID:  cloneUUIDPtr(req.PushSessionID),
 		ArtifactID:     req.ArtifactID,
 		Scanner:        s.Name(),
 		ScannerVersion: ver,

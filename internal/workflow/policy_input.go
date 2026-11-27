@@ -45,6 +45,11 @@ func enforceMandatoryScanners(summary inspection.InspectionSummary, scanRuns []d
 	return out
 }
 
+// SummaryToFindingsInput maps a Stage A InspectionSummary into Stage C CEL FindingsInput.
+func SummaryToFindingsInput(s inspection.InspectionSummary) policy.FindingsInput {
+	return summaryToFindingsInput(s)
+}
+
 func summaryToFindingsInput(s inspection.InspectionSummary) policy.FindingsInput {
 	cat := make(map[string]int64, len(s.CountsByCategory))
 	for k, v := range s.CountsByCategory {
@@ -78,6 +83,12 @@ func summaryToFindingsInput(s inspection.InspectionSummary) policy.FindingsInput
 		HighVulnerabilities:       int64(s.HighVulnerabilities),
 		HighSASTFindings:          int64(s.HighSASTFindings),
 		TotalFindings:             int64(s.TotalFindings),
+		IPExactMatches:            int64(s.IPExactMatches),
+		IPWinnowMatches:           int64(s.IPWinnowMatches),
+		IPHeaderStripMatches:      int64(s.IPHeaderStripMatches),
+		ConcealmentFindings:       int64(s.ConcealmentFindings),
+		RestrictedIPMatches:       int64(s.RestrictedIPMatches),
+		ConfidentialIPMatches:     int64(s.ConfidentialIPMatches),
 		CountsByCategory:          cat,
 		CountsBySeverity:          sev,
 		CountsByScanner:           sc,

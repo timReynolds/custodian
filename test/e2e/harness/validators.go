@@ -281,6 +281,10 @@ func FindSecretOrEncodedLeaks(text string, secrets ...string) []string {
 		if escaped != sec && strings.Contains(text, escaped) {
 			leaks = append(leaks, fmt.Sprintf("urlescaped(%s)", maskSecret(sec)))
 		}
+		pathEscaped := url.PathEscape(sec)
+		if pathEscaped != sec && pathEscaped != escaped && strings.Contains(text, pathEscaped) {
+			leaks = append(leaks, fmt.Sprintf("urlpathescaped(%s)", maskSecret(sec)))
+		}
 	}
 	return leaks
 }

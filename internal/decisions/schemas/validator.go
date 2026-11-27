@@ -120,7 +120,7 @@ func ValidateAssessmentResult(raw []byte) (domain.AssessmentResult, error) {
 	risk := domain.RiskLevel(riskStr)
 
 	dispStr, ok := obj["disposition"].(string)
-	if !ok || !domain.Disposition(dispStr).IsValid() {
+	if !ok || !domain.Disposition(dispStr).IsValid() || domain.Disposition(dispStr) == domain.DispositionNotRequired {
 		return domain.AssessmentResult{}, domain.Unprocessable(
 			"INVALID_ASSESSMENT_SCHEMA",
 			"disposition must be a valid Disposition",

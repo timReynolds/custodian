@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +25,8 @@ import (
 	"github.com/timreynolds/custodian/internal/domain"
 	"github.com/timreynolds/custodian/internal/github"
 	"github.com/timreynolds/custodian/internal/identity"
+	"github.com/timreynolds/custodian/internal/inspection"
+	"github.com/timreynolds/custodian/internal/inspection/fingerprints"
 	"github.com/timreynolds/custodian/internal/observability"
 	"github.com/timreynolds/custodian/internal/operations"
 	"github.com/timreynolds/custodian/internal/persistence"
@@ -311,6 +315,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		Proposals:            propsSvc,
 		Approvals:            approvalsSvc,
 		PolicyEngine:         policyEngine,
+		IPCorpusReindexer:    newIPCorpusReindexer(store),
 		Metrics:              metrics,
 		Tracer:               tracerRuntime.Tracer("custodian.api"),
 		Logger:               logger,
@@ -448,4 +453,203 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+type ipCorpusReindexerAdapter struct {
+	indexer *fingerprints.CorpusIndexer
+}
+
+func newIPCorpusReindexer(store *persistence.Store) api.IPCorpusReindexer {
+	if store == nil {
+		return nil
+	}
+	return &ipCorpusReindexerAdapter{
+		indexer: fingerprints.NewCorpusIndexer(store, fingerprints.NewPersistenceTxRunner(store)),
+	}
+}
+
+func (a *ipCorpusReindexerAdapter) Reindex(ctx context.Context, input api.IPCorpusReindexInput) (api.IPCorpusReindexResult, error) {
+	if a == nil || a.indexer == nil {
+		return api.IPCorpusReindexResult{}, domain.Unavailable("SERVICE_UNAVAILABLE", "IP corpus indexer is not configured")
+	}
+	if err := ctx.Err(); err != nil {
+		return api.IPCorpusReindexResult{}, mapReindexContextError(err)
+	}
+	dir := strings.TrimSpace(input.SourcePath)
+	if dir != "" && len(input.Files) > 0 {
+		return api.IPCorpusReindexResult{}, domain.BadRequest("INVALID_CORPUS_SOURCE", "source_path and files cannot both be specified")
+	}
+
+	isReady := input.Corpus.Status == domain.IPCorpusStatusReady && input.Corpus.FingerprintCount > 0
+
+	// Idempotent reindex when raw inline files were already indexed on creation (raw source is never stored in PG).
+	if dir == "" && len(input.Files) == 0 && isReady {
+		if strings.TrimSpace(input.SourceRef) == "" || input.SourceRef == input.Corpus.SourceRef {
+			return api.IPCorpusReindexResult{
+				Status:              domain.IPCorpusStatusReady,
+				FingerprintsIndexed: input.Corpus.FingerprintCount,
+				FilesProcessed:      0,
+				LastIndexedDigest:   input.Corpus.LastIndexedDigest,
+				CompletedAt:         input.Corpus.LastIndexedAt,
+			}, nil
+		}
+		// Do not invoke a.indexer.Index on an already-READY corpus when SourceRef changed without new content,
+		// because CorpusIndexer.failCorpus would flip ip_fingerprint_corpora.status from READY to FAILED.
+		return api.IPCorpusReindexResult{}, domain.Unprocessable("EMPTY_CORPUS", "corpus contains no files to index")
+	}
+
+	files := make([]fingerprints.CorpusFile, 0, len(input.Files))
+	for _, f := range input.Files {
+		files = append(files, fingerprints.CorpusFile{
+			Path:    f.Path,
+			Content: []byte(f.Content),
+			SHA256:  f.SHA256,
+		})
+	}
+
+	// Pre-validate source inputs before calling CorpusIndexer.Index on a live READY corpus so
+	// client validation errors (400/422) never trigger failCorpus and disable L1/L2 matching.
+	if isReady {
+		if err := prevalidateReadyCorpusReindex(input.Corpus, dir, files); err != nil {
+			return api.IPCorpusReindexResult{}, err
+		}
+	}
+
+	res, err := a.indexer.Index(ctx, fingerprints.IndexRequest{
+		CorpusID: input.Corpus.ID,
+		Dir:      dir,
+		Files:    files,
+		Force:    input.Force,
+	})
+	if err != nil {
+		if mapped := mapReindexContextError(err); mapped != err {
+			return api.IPCorpusReindexResult{}, mapped
+		}
+		return api.IPCorpusReindexResult{}, err
+	}
+
+	return api.IPCorpusReindexResult{
+		Status:              res.Corpus.Status,
+		FingerprintsIndexed: res.FingerprintCount,
+		FilesProcessed:      int64(res.FilesIndexed),
+		LastIndexedDigest:   res.Corpus.LastIndexedDigest,
+		CompletedAt:         res.Corpus.LastIndexedAt,
+	}, nil
+}
+
+func mapReindexContextError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return domain.WrapError(domain.ErrUnavailable, "REINDEX_TIMEOUT", "corpus reindex timed out", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		return domain.WrapError(domain.ErrUnavailable, "REINDEX_CANCELLED", "corpus reindex cancelled", err)
+	}
+	return err
+}
+
+func prevalidateReadyCorpusReindex(corpus domain.IPFingerprintCorpus, dir string, files []fingerprints.CorpusFile) error {
+	var raw []fingerprints.CorpusFile
+	if dir != "" {
+		inv, err := inspection.WalkWorkspace(dir)
+		if err != nil {
+			return err
+		}
+		if inv.FilesSkipped > 0 || len(inv.SkippedReasons) > 0 {
+			return domain.Unprocessable("INCOMPLETE_CORPUS_WALK", "corpus directory contains unreadable, symlinked, or non-regular files")
+		}
+		raw = make([]fingerprints.CorpusFile, 0, len(inv.Files))
+		for _, entry := range inv.Files {
+			content, err := os.ReadFile(entry.AbsPath)
+			if err != nil {
+				return domain.WrapError(domain.ErrUnprocessable, "CORPUS_FILE_READ_FAILED", "failed reading corpus file", err)
+			}
+			raw = append(raw, fingerprints.CorpusFile{
+				Path:    entry.RelPath,
+				Content: content,
+			})
+		}
+	} else {
+		raw = files
+	}
+
+	if len(raw) == 0 {
+		return domain.Unprocessable("EMPTY_CORPUS", "corpus contains no files to index")
+	}
+
+	winnowK := corpus.WinnowK
+	if winnowK <= 0 {
+		winnowK = 25
+	}
+	winnowW := corpus.WinnowW
+	if winnowW <= 0 {
+		winnowW = 15
+	}
+	chunkSize := corpus.ChunkSizeBytes
+	if chunkSize <= 0 {
+		chunkSize = 4096
+	}
+
+	seenPaths := make(map[string]struct{}, len(raw))
+	hasNonEmptyText := false
+	hasExtractable := false
+	for _, f := range raw {
+		cleanPath, err := normalizeCorpusRelPathForPrevalidate(f.Path)
+		if err != nil {
+			return err
+		}
+		if _, dup := seenPaths[cleanPath]; dup {
+			return domain.BadRequest("DUPLICATE_CORPUS_PATH", "duplicate file path in corpus")
+		}
+		seenPaths[cleanPath] = struct{}{}
+
+		if strings.TrimSpace(f.SHA256) != "" {
+			expected, err := domain.ParseSHA256Digest(f.SHA256)
+			if err != nil {
+				return err
+			}
+			if domain.SHA256Hex(f.Content) != expected {
+				return domain.Unprocessable("CORPUS_FILE_DIGEST_MISMATCH", "corpus file content digest mismatch")
+			}
+		}
+
+		if bytes.IndexByte(f.Content, 0) < 0 && len(bytes.TrimSpace(f.Content)) > 0 {
+			hasNonEmptyText = true
+		}
+		if len(fingerprints.ExtractL1Chunks(cleanPath, f.Content, chunkSize)) > 0 {
+			hasExtractable = true
+			continue
+		}
+		if _, winnows := fingerprints.ExtractL2Winnow(cleanPath, f.Content, winnowK, winnowW); len(winnows) > 0 {
+			hasExtractable = true
+			continue
+		}
+		hdr := fingerprints.ExtractHeadersAndBody(f.Content)
+		if len(hdr.Markers) > 0 || (hdr.HasHeader && hdr.HeaderlessBodyHash != "") {
+			hasExtractable = true
+		}
+	}
+
+	if !hasNonEmptyText {
+		return domain.Unprocessable("EMPTY_CORPUS", "corpus contains no non-empty text source files")
+	}
+	if !hasExtractable {
+		return domain.Unprocessable("EMPTY_CORPUS_FINGERPRINTS", "corpus yielded zero extractable fingerprints")
+	}
+	return nil
+}
+
+func normalizeCorpusRelPathForPrevalidate(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.ContainsRune(trimmed, '\x00') || strings.ContainsRune(trimmed, '\\') {
+		return "", domain.BadRequest("INVALID_CORPUS_PATH", "corpus file path is invalid")
+	}
+	if strings.HasPrefix(trimmed, "/") || filepath.IsAbs(trimmed) {
+		return "", domain.BadRequest("INVALID_CORPUS_PATH", "corpus file path must be relative")
+	}
+	slash := filepath.ToSlash(filepath.Clean(trimmed))
+	slash = strings.TrimPrefix(slash, "./")
+	if slash == "" || slash == "." || slash == ".." || strings.HasPrefix(slash, "../") {
+		return "", domain.BadRequest("INVALID_CORPUS_PATH", "corpus file path must not traverse outside root")
+	}
+	return slash, nil
 }

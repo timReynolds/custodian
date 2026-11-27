@@ -58,6 +58,7 @@ ArtifactRef:
         - PUBLICATION_MANIFEST
         - SCAN_EVIDENCE
         - MODEL_EVIDENCE
+        - GIT_PUSH_BUNDLE
     sha256:
       $ref: "./common.yaml#/SHA256Hex"
     size_bytes:

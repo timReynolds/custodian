@@ -215,9 +215,13 @@ func (e *Engine) RunTestSuite(ctx context.Context, suite *TestSuite, baseDir str
 		return fallback, nil
 	}
 
-	defaultBundle, err := resolveBundle(suite.Bundle, suite.BundleYAML, overrideBundle)
-	if err != nil {
-		return TestSuiteReport{}, fmt.Errorf("suite %q bundle: %w", suite.Metadata.Name, err)
+	defaultBundle := overrideBundle
+	if defaultBundle == nil {
+		var err error
+		defaultBundle, err = resolveBundle(suite.Bundle, suite.BundleYAML, nil)
+		if err != nil {
+			return TestSuiteReport{}, fmt.Errorf("suite %q bundle: %w", suite.Metadata.Name, err)
+		}
 	}
 	defaultOrgBundle, err := resolveBundle(suite.OrgBundle, suite.OrgBundleYAML, nil)
 	if err != nil {

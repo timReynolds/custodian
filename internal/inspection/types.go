@@ -21,8 +21,9 @@ const (
 
 // Stage identifies the Custodian workflow stage triggering inspection.
 const (
-	StageIngress = "INGRESS"
-	StageEgress  = "EGRESS"
+	StageIngress    = "INGRESS"
+	StageEgress     = "EGRESS"
+	StagePushEgress = "PUSH_EGRESS"
 )
 
 // MandatoryScanners lists scanners required on every Stage A inspection run.
@@ -36,12 +37,14 @@ var MandatoryScanners = []ScannerKind{
 // Request describes the verified workspace/tree target for Stage A inspection.
 type Request struct {
 	ProposalID        uuid.UUID             `json:"proposal_id"`
+	PushSessionID     *uuid.UUID            `json:"push_session_id,omitempty"`
 	ArtifactID        uuid.UUID             `json:"artifact_id"`
 	TargetDir         string                `json:"target_dir"`
 	Classification    domain.Classification `json:"classification"`
 	Stage             string                `json:"stage,omitempty"`
 	ChangedPaths      []string              `json:"changed_paths,omitempty"`
 	MandatoryScanners []string              `json:"mandatory_scanners,omitempty"`
+	UnifiedDiff       string                `json:"-"`
 	ExtraSecrets      []string              `json:"-"`
 }
 
@@ -81,6 +84,12 @@ type InspectionSummary struct {
 	HighVulnerabilities       int            `json:"high_vulnerabilities"`
 	HighSASTFindings          int            `json:"high_sast_findings"`
 	TotalFindings             int            `json:"total_findings"`
+	IPExactMatches            int            `json:"ip_exact_matches"`
+	IPWinnowMatches           int            `json:"ip_winnow_matches"`
+	IPHeaderStripMatches      int            `json:"ip_header_strip_matches"`
+	ConcealmentFindings       int            `json:"concealment_findings"`
+	RestrictedIPMatches       int            `json:"restricted_ip_matches"`
+	ConfidentialIPMatches     int            `json:"confidential_ip_matches"`
 	CountsByCategory          map[string]int `json:"counts_by_category"`
 	CountsBySeverity          map[string]int `json:"counts_by_severity"`
 	CountsByScanner           map[string]int `json:"counts_by_scanner"`
@@ -99,6 +108,12 @@ func (s InspectionSummary) PolicyFacts() map[string]any {
 		"high_vulnerabilities":        s.HighVulnerabilities,
 		"high_sast_findings":          s.HighSASTFindings,
 		"total_findings":              s.TotalFindings,
+		"ip_exact_matches":            s.IPExactMatches,
+		"ip_winnow_matches":           s.IPWinnowMatches,
+		"ip_header_strip_matches":     s.IPHeaderStripMatches,
+		"concealment_findings":        s.ConcealmentFindings,
+		"restricted_ip_matches":       s.RestrictedIPMatches,
+		"confidential_ip_matches":     s.ConfidentialIPMatches,
 		"counts_by_category":          cloneIntMap(s.CountsByCategory),
 		"counts_by_severity":          cloneIntMap(s.CountsBySeverity),
 		"counts_by_scanner":           cloneIntMap(s.CountsByScanner),
@@ -110,12 +125,13 @@ func (s InspectionSummary) PolicyFacts() map[string]any {
 
 // Report contains all persisted-ready Stage A scan runs, redacted findings, and summary facts.
 type Report struct {
-	ProposalID uuid.UUID         `json:"proposal_id"`
-	ArtifactID uuid.UUID         `json:"artifact_id"`
-	ScanRuns   []domain.ScanRun  `json:"scan_runs"`
-	Findings   []domain.Finding  `json:"findings"`
-	Summary    InspectionSummary `json:"summary"`
-	redactor   *Redactor
+	ProposalID    uuid.UUID         `json:"proposal_id"`
+	PushSessionID *uuid.UUID        `json:"push_session_id,omitempty"`
+	ArtifactID    uuid.UUID         `json:"artifact_id"`
+	ScanRuns      []domain.ScanRun  `json:"scan_runs"`
+	Findings      []domain.Finding  `json:"findings"`
+	Summary       InspectionSummary `json:"summary"`
+	redactor      *Redactor
 }
 
 // ScrubText redacts all secrets harvested during Stage A inspection (plus encoded

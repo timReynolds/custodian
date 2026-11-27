@@ -82,6 +82,7 @@ SimulatePolicyRequest:
       enum:
         - INGRESS
         - EGRESS
+        - PUSH_EGRESS
     input:
       $ref: "./policies.yaml#/PolicySimulationInput"
 

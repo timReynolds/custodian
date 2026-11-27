@@ -17,20 +17,29 @@ type MetricsConfig struct {
 }
 
 type Metrics struct {
-	registry                *prometheus.Registry
-	WorkflowDuration        *prometheus.HistogramVec
-	OperationsTotal         *prometheus.CounterVec
-	ActiveOperations        *prometheus.GaugeVec
-	HTTPRequestsTotal       *prometheus.CounterVec
-	HTTPRequestDuration     *prometheus.HistogramVec
-	ScannerRunsTotal        *prometheus.CounterVec
-	ScannerFailuresTotal    *prometheus.CounterVec
-	ModelAssessmentsTotal   *prometheus.CounterVec
-	ModelCostUSDTotal       *prometheus.CounterVec
-	PolicyDecisionsTotal    *prometheus.CounterVec
-	PolicyDenialsTotal      *prometheus.CounterVec
-	PublicationsTotal       *prometheus.CounterVec
-	PublicationRetriesTotal prometheus.Counter
+	registry                        *prometheus.Registry
+	WorkflowDuration                *prometheus.HistogramVec
+	OperationsTotal                 *prometheus.CounterVec
+	ActiveOperations                *prometheus.GaugeVec
+	HTTPRequestsTotal               *prometheus.CounterVec
+	HTTPRequestDuration             *prometheus.HistogramVec
+	ScannerRunsTotal                *prometheus.CounterVec
+	ScannerFailuresTotal            *prometheus.CounterVec
+	ModelAssessmentsTotal           *prometheus.CounterVec
+	ModelCostUSDTotal               *prometheus.CounterVec
+	PolicyDecisionsTotal            *prometheus.CounterVec
+	PolicyDenialsTotal              *prometheus.CounterVec
+	PublicationsTotal               *prometheus.CounterVec
+	PublicationRetriesTotal         prometheus.Counter
+	PushSessionsTotal               *prometheus.CounterVec
+	PushGatewayDuration             *prometheus.HistogramVec
+	PushQuarantineRejectionsTotal   *prometheus.CounterVec
+	PushIPFingerprintMatchesTotal   *prometheus.CounterVec
+	PushIPFingerprintDuration       *prometheus.HistogramVec
+	PushPassiveAuditWouldBlockTotal *prometheus.CounterVec
+	PushApprovalReleasesTotal       *prometheus.CounterVec
+	PushUpstreamBytesTotal          *prometheus.CounterVec
+	PushLFSBatchRequestsTotal       *prometheus.CounterVec
 }
 
 // NewMetrics creates an isolated Prometheus Registry and registers all Custodian metrics.
@@ -119,6 +128,53 @@ func NewMetrics(cfg MetricsConfig) (*Metrics, error) {
 			Name:      "publication_retries_total",
 			Help:      "Total publisher retry attempts.",
 		}),
+		PushSessionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_sessions_total",
+			Help:      "Total push gateway sessions by transport, egress mode, policy effect, and final status.",
+		}, []string{"transport", "egress_mode", "effect", "status"}),
+		PushGatewayDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns,
+			Name:      "push_gateway_duration_seconds",
+			Help:      "Push gateway phase duration in seconds.",
+			Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 12, 30},
+		}, []string{"transport", "egress_mode", "phase"}),
+		PushQuarantineRejectionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_quarantine_rejections_total",
+			Help:      "Total push quarantine rejections by reason.",
+		}, []string{"reason"}),
+		PushIPFingerprintMatchesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_ip_fingerprint_matches_total",
+			Help:      "Total IP fingerprint matches by layer and corpus classification.",
+		}, []string{"layer", "classification"}),
+		PushIPFingerprintDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns,
+			Name:      "push_ip_fingerprint_duration_seconds",
+			Help:      "IP fingerprinting evaluation latency in seconds.",
+			Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2.5},
+		}, []string{"classification"}),
+		PushPassiveAuditWouldBlockTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_passive_audit_would_block_total",
+			Help:      "Total PASSIVE_AUDIT pushes that would have been blocked under enforcement.",
+		}, []string{"delivery", "effect"}),
+		PushApprovalReleasesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_approval_releases_total",
+			Help:      "Total push approval release lifecycle events by outcome.",
+		}, []string{"outcome"}),
+		PushUpstreamBytesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_upstream_bytes_total",
+			Help:      "Total bytes forwarded upstream by egress mode and phase.",
+		}, []string{"egress_mode", "phase"}),
+		PushLFSBatchRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "push_lfs_batch_requests_total",
+			Help:      "Total Git LFS batch requests evaluated by operation and policy effect.",
+		}, []string{"operation", "effect"}),
 	}
 
 	allCollectors := []prometheus.Collector{
@@ -135,6 +191,15 @@ func NewMetrics(cfg MetricsConfig) (*Metrics, error) {
 		m.PolicyDenialsTotal,
 		m.PublicationsTotal,
 		m.PublicationRetriesTotal,
+		m.PushSessionsTotal,
+		m.PushGatewayDuration,
+		m.PushQuarantineRejectionsTotal,
+		m.PushIPFingerprintMatchesTotal,
+		m.PushIPFingerprintDuration,
+		m.PushPassiveAuditWouldBlockTotal,
+		m.PushApprovalReleasesTotal,
+		m.PushUpstreamBytesTotal,
+		m.PushLFSBatchRequestsTotal,
 	}
 	for _, c := range allCollectors {
 		if err := reg.Register(c); err != nil {
@@ -241,4 +306,67 @@ func (m *Metrics) IncPublicationRetry() {
 		return
 	}
 	m.PublicationRetriesTotal.Inc()
+}
+
+func (m *Metrics) RecordPushSession(transport, egressMode, effect, status string) {
+	if m == nil {
+		return
+	}
+	m.PushSessionsTotal.WithLabelValues(transport, egressMode, effect, status).Inc()
+}
+
+func (m *Metrics) ObservePushPhase(transport, egressMode, phase string, dur time.Duration) {
+	if m == nil {
+		return
+	}
+	m.PushGatewayDuration.WithLabelValues(transport, egressMode, phase).Observe(dur.Seconds())
+}
+
+func (m *Metrics) IncPushQuarantineRejection(reason string) {
+	if m == nil {
+		return
+	}
+	m.PushQuarantineRejectionsTotal.WithLabelValues(reason).Inc()
+}
+
+func (m *Metrics) IncPushIPMatch(layer, classification string) {
+	if m == nil {
+		return
+	}
+	m.PushIPFingerprintMatchesTotal.WithLabelValues(layer, classification).Inc()
+}
+
+func (m *Metrics) ObservePushIPFingerprint(classification string, dur time.Duration) {
+	if m == nil {
+		return
+	}
+	m.PushIPFingerprintDuration.WithLabelValues(classification).Observe(dur.Seconds())
+}
+
+func (m *Metrics) IncPushPassiveAuditWouldBlock(delivery, effect string) {
+	if m == nil {
+		return
+	}
+	m.PushPassiveAuditWouldBlockTotal.WithLabelValues(delivery, effect).Inc()
+}
+
+func (m *Metrics) IncPushApprovalRelease(outcome string) {
+	if m == nil {
+		return
+	}
+	m.PushApprovalReleasesTotal.WithLabelValues(outcome).Inc()
+}
+
+func (m *Metrics) AddPushUpstreamBytes(egressMode, phase string, n int64) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.PushUpstreamBytesTotal.WithLabelValues(egressMode, phase).Add(float64(n))
+}
+
+func (m *Metrics) IncPushLFSBatch(operation, effect string) {
+	if m == nil {
+		return
+	}
+	m.PushLFSBatchRequestsTotal.WithLabelValues(operation, effect).Inc()
 }

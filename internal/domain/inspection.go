@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -62,6 +63,7 @@ type ScanCoverage struct {
 type ScanRun struct {
 	ID             uuid.UUID    `json:"id"`
 	ProposalID     uuid.UUID    `json:"proposal_id"`
+	PushSessionID  *uuid.UUID   `json:"push_session_id,omitempty"`
 	ArtifactID     uuid.UUID    `json:"artifact_id"`
 	Scanner        string       `json:"scanner"`
 	ScannerVersion string       `json:"scanner_version"`
@@ -98,13 +100,13 @@ type Finding struct {
 }
 
 var forbiddenMetadataKeys = map[string]struct{}{
-	"raw_secret":  {},
-	"secret":      {},
-	"token":       {},
-	"private_key": {},
-	"password":    {},
-	"credential":  {},
-	"match_raw":   {},
+	"rawsecret":  {},
+	"secret":     {},
+	"token":      {},
+	"privatekey": {},
+	"password":   {},
+	"credential": {},
+	"matchraw":   {},
 }
 
 // ValidateRedacted ensures secret findings are redacted and Metadata never carries raw secret keys.
@@ -126,14 +128,18 @@ type metadataVisitKey struct {
 }
 
 func checkMetadataKeys(m map[string]any) error {
-	return checkMetadataValue(m)
+	return checkMetadataKeysWith(m, isForbiddenMetadataKeyName, "FORBIDDEN_SECRET_METADATA", "finding metadata contains forbidden raw-secret key")
 }
 
-func checkMetadataValue(v any) error {
+func checkMetadataKeysWith(m map[string]any, isForbidden func(string) bool, errCode, errMsg string) error {
+	return checkMetadataValueWith(m, isForbidden, errCode, errMsg)
+}
+
+func checkMetadataValueWith(v any, isForbidden func(string) bool, errCode, errMsg string) error {
 	if v == nil {
 		return nil
 	}
-	return checkMetadataReflect(reflect.ValueOf(v), nil)
+	return checkMetadataReflect(reflect.ValueOf(v), nil, isForbidden, errCode, errMsg)
 }
 
 var (
@@ -143,7 +149,7 @@ var (
 	timePtrType        = reflect.TypeOf((*time.Time)(nil))
 )
 
-func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) error {
+func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool, isForbidden func(string) bool, errCode, errMsg string) error {
 	if !rv.IsValid() {
 		return nil
 	}
@@ -151,7 +157,7 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 		if rv.IsNil() {
 			return nil
 		}
-		return checkMetadataReflect(rv.Elem(), visiting)
+		return checkMetadataReflect(rv.Elem(), visiting, isForbidden, errCode, errMsg)
 	}
 	if rv.Kind() == reflect.Pointer && rv.IsNil() {
 		return nil
@@ -168,7 +174,7 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 			marshaler = rv.Addr().Interface().(json.Marshaler)
 		}
 		if marshaler != nil {
-			return checkJSONMarshaler(marshaler, visiting)
+			return checkJSONMarshaler(marshaler, visiting, isForbidden, errCode, errMsg)
 		}
 	}
 	switch rv.Kind() {
@@ -186,7 +192,7 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 		}
 		visiting[key] = true
 		defer delete(visiting, key)
-		return checkMetadataReflect(rv.Elem(), visiting)
+		return checkMetadataReflect(rv.Elem(), visiting, isForbidden, errCode, errMsg)
 	case reflect.Map:
 		if rv.IsNil() {
 			return nil
@@ -206,10 +212,10 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 		defer delete(visiting, key)
 		iter := rv.MapRange()
 		for iter.Next() {
-			if isForbiddenMetadataKeyValue(iter.Key()) {
-				return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata contains forbidden raw-secret key")
+			if isForbiddenMetadataKeyValueWith(iter.Key(), isForbidden) {
+				return Unprocessable(errCode, errMsg)
 			}
-			if err := checkMetadataReflect(iter.Value(), visiting); err != nil {
+			if err := checkMetadataReflect(iter.Value(), visiting, isForbidden, errCode, errMsg); err != nil {
 				return err
 			}
 		}
@@ -232,14 +238,14 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 			defer delete(visiting, key)
 		}
 		for i := 0; i < rv.Len(); i++ {
-			if err := checkMetadataReflect(rv.Index(i), visiting); err != nil {
+			if err := checkMetadataReflect(rv.Index(i), visiting, isForbidden, errCode, errMsg); err != nil {
 				return err
 			}
 		}
 		return nil
 	case reflect.Array:
 		for i := 0; i < rv.Len(); i++ {
-			if err := checkMetadataReflect(rv.Index(i), visiting); err != nil {
+			if err := checkMetadataReflect(rv.Index(i), visiting, isForbidden, errCode, errMsg); err != nil {
 				return err
 			}
 		}
@@ -254,22 +260,22 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 				// unless explicitly omitted with json:"-".
 				if sf.Anonymous && sf.Tag.Get("json") != "-" &&
 					(f.Kind() == reflect.Struct || (f.Kind() == reflect.Pointer && !f.IsNil() && f.Type().Elem().Kind() == reflect.Struct)) {
-					if err := checkMetadataReflect(f, visiting); err != nil {
+					if err := checkMetadataReflect(f, visiting, isForbidden, errCode, errMsg); err != nil {
 						return err
 					}
 				}
 				continue
 			}
-			if isForbiddenMetadataKeyName(sf.Name) {
-				return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata contains forbidden raw-secret key")
+			if isForbidden(sf.Name) {
+				return Unprocessable(errCode, errMsg)
 			}
 			if tag := sf.Tag.Get("json"); tag != "" {
 				tagName := strings.Split(tag, ",")[0]
-				if tagName != "" && tagName != "-" && isForbiddenMetadataKeyName(tagName) {
-					return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata contains forbidden raw-secret key")
+				if tagName != "" && tagName != "-" && isForbidden(tagName) {
+					return Unprocessable(errCode, errMsg)
 				}
 			}
-			if err := checkMetadataReflect(f, visiting); err != nil {
+			if err := checkMetadataReflect(f, visiting, isForbidden, errCode, errMsg); err != nil {
 				return err
 			}
 		}
@@ -279,28 +285,28 @@ func checkMetadataReflect(rv reflect.Value, visiting map[metadataVisitKey]bool) 
 	}
 }
 
-func checkJSONMarshaler(marshaler json.Marshaler, visiting map[metadataVisitKey]bool) error {
+func checkJSONMarshaler(marshaler json.Marshaler, visiting map[metadataVisitKey]bool, isForbidden func(string) bool, errCode, errMsg string) error {
 	raw, err := marshaler.MarshalJSON()
 	if err != nil {
-		return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata failed JSON marshaling")
+		return Unprocessable(errCode, "metadata failed JSON marshaling")
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata contains empty JSON marshaler output")
+		return Unprocessable(errCode, "metadata contains empty JSON marshaler output")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var decoded any
 	if err := dec.Decode(&decoded); err != nil {
-		return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata contains invalid JSON marshaler output")
+		return Unprocessable(errCode, "metadata contains invalid JSON marshaler output")
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
-		return Unprocessable("FORBIDDEN_SECRET_METADATA", "finding metadata contains trailing JSON marshaler output")
+		return Unprocessable(errCode, "metadata contains trailing JSON marshaler output")
 	}
-	return checkMetadataReflect(reflect.ValueOf(decoded), visiting)
+	return checkMetadataReflect(reflect.ValueOf(decoded), visiting, isForbidden, errCode, errMsg)
 }
 
-func isForbiddenMetadataKeyValue(k reflect.Value) bool {
+func isForbiddenMetadataKeyValueWith(k reflect.Value, isForbidden func(string) bool) bool {
 	if !k.IsValid() {
 		return false
 	}
@@ -319,11 +325,22 @@ func isForbiddenMetadataKeyValue(k reflect.Value) bool {
 	default:
 		return false
 	}
-	return isForbiddenMetadataKeyName(keyStr)
+	return isForbidden(keyStr)
+}
+
+func normalizeMetadataKeyName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range strings.ToLower(name) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func isForbiddenMetadataKeyName(name string) bool {
-	norm := strings.ToLower(strings.TrimSpace(name))
+	norm := normalizeMetadataKeyName(name)
 	_, forbidden := forbiddenMetadataKeys[norm]
 	return forbidden
 }
@@ -335,11 +352,12 @@ const (
 	AssessmentStatusComplete      AssessmentStatus = "COMPLETE"
 	AssessmentStatusIndeterminate AssessmentStatus = "INDETERMINATE"
 	AssessmentStatusFailed        AssessmentStatus = "FAILED"
+	AssessmentStatusNotRequired   AssessmentStatus = "NOT_REQUIRED"
 )
 
 func (s AssessmentStatus) IsValid() bool {
 	switch s {
-	case AssessmentStatusPending, AssessmentStatusComplete, AssessmentStatusIndeterminate, AssessmentStatusFailed:
+	case AssessmentStatusPending, AssessmentStatusComplete, AssessmentStatusIndeterminate, AssessmentStatusFailed, AssessmentStatusNotRequired:
 		return true
 	default:
 		return false
@@ -373,11 +391,12 @@ const (
 	DispositionEscalate      Disposition = "ESCALATE"
 	DispositionBlock         Disposition = "BLOCK"
 	DispositionIndeterminate Disposition = "INDETERMINATE"
+	DispositionNotRequired   Disposition = "NOT_REQUIRED"
 )
 
 func (d Disposition) IsValid() bool {
 	switch d {
-	case DispositionClear, DispositionReview, DispositionEscalate, DispositionBlock, DispositionIndeterminate:
+	case DispositionClear, DispositionReview, DispositionEscalate, DispositionBlock, DispositionIndeterminate, DispositionNotRequired:
 		return true
 	default:
 		return false
@@ -385,7 +404,7 @@ func (d Disposition) IsValid() bool {
 }
 
 func (d Disposition) BlocksPublication() bool {
-	return d == DispositionBlock || d == DispositionIndeterminate || !d.IsValid()
+	return d == DispositionBlock || d == DispositionIndeterminate || d == DispositionNotRequired || !d.IsValid()
 }
 
 type AssessmentFinding struct {
@@ -409,6 +428,7 @@ type AssessmentResult struct {
 type ModelAssessment struct {
 	ID             uuid.UUID        `json:"id"`
 	ProposalID     uuid.UUID        `json:"proposal_id"`
+	PushSessionID  *uuid.UUID       `json:"push_session_id,omitempty"`
 	ArtifactID     uuid.UUID        `json:"artifact_id"`
 	ModelRoute     string           `json:"model_route"`
 	ModelVersion   string           `json:"model_version"`
@@ -427,4 +447,22 @@ type ModelAssessment struct {
 // BlocksPublication fails closed whenever an assessment is incomplete, indeterminate, failed, or blocking.
 func (a ModelAssessment) BlocksPublication() bool {
 	return a.Status != AssessmentStatusComplete || a.Disposition.BlocksPublication()
+}
+
+// AllowsPushEgress reports whether the assessment permits PUSH_EGRESS evaluation without
+// blocking. Unlike BlocksPublication() (which stays strictly fail-closed for v1.0 PR EGRESS),
+// PUSH_EGRESS permits NOT_REQUIRED when Stage B was intentionally bypassed.
+func (a ModelAssessment) AllowsPushEgress() bool {
+	if a.Status == AssessmentStatusNotRequired {
+		return a.Disposition == DispositionNotRequired || a.Disposition == "" || a.Disposition == DispositionClear
+	}
+	return !a.BlocksPublication()
+}
+
+// BlocksStage applies stage-appropriate fail-closed semantics for ModelAssessment.
+func (a ModelAssessment) BlocksStage(stage PolicyStage) bool {
+	if stage == PolicyStagePushEgress {
+		return !a.AllowsPushEgress()
+	}
+	return a.BlocksPublication()
 }

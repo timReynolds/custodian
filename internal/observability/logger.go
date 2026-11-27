@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -55,12 +56,22 @@ var defaultAllowlist = []string{
 	"assessment_type", "classification", "component", "service", "version",
 	"stage", "generation", "attempts", "attempt_count", "size_bytes",
 	"files_examined", "files_skipped", "complete", "branch_ref", "target_ref", "reason",
+	// Push gateway IDs, digests & safe operational metadata
+	"push_session_id", "push_approval_release_id", "approval_release_id", "corpus_id", "ip_fingerprint_corpus_id",
+	"ssh_key_id", "ssh_cert_serial",
+	"push_manifest_digest", "pack_digest", "corpus_digest", "old_oid", "new_oid",
+	"transport", "egress_mode", "passive_audit_delivery", "enforced",
+	"has_lfs", "lfs_object_count", "lfs_total_bytes",
+	"ref_count", "commit_count", "object_count", "pack_bytes",
+	"upstream_forwarded", "upstream_bytes_sent",
+	"destination_registered", "destination_external", "layer",
 }
 
 var defaultAllowedGroups = []string{
 	"request", "http", "trace", "workspace", "proposal", "operation",
 	"artifact", "repository", "principal", "publication", "scan",
 	"assessment", "policy", "approval", "audit", "error", "metadata",
+	"push", "push_session", "quarantine", "destination", "corpus", "approval_release", "lfs",
 }
 
 var explicitDenylist = map[string]struct{}{
@@ -72,6 +83,43 @@ var explicitDenylist = map[string]struct{}{
 	"apikey": {}, "body": {}, "payload": {}, "email": {},
 	"verified_email": {}, "comment": {}, "stdout": {}, "stderr": {},
 	"env": {}, "headers": {}, "raw": {},
+	"bundle": {}, "pack": {}, "packfile": {}, "raw_bundle": {}, "raw_pack": {},
+	"blob": {}, "raw_blob": {}, "tree": {}, "commit_message": {}, "snippet": {},
+	"source_code": {}, "restricted_source": {},
+	"credential": {}, "credentials": {}, "pat": {}, "oauth_token": {}, "oidc_token": {},
+	"broker_token": {}, "upstream_token": {}, "forwarded_token": {},
+	"ssh_private_key": {}, "ssh_cert": {}, "ssh_certificate": {}, "certificate": {},
+	"private_key_pem": {}, "cookie_header": {}, "proxy_authorization": {},
+	"x_access_token": {}, "git_askpass": {}, "askpass": {}, "extra_secrets": {},
+	"secret_value": {}, "signing_key": {}, "hmac_key": {}, "key": {},
+}
+
+var normalizedDenylist = func() map[string]struct{} {
+	out := make(map[string]struct{}, len(explicitDenylist))
+	for k := range explicitDenylist {
+		out[normalizeDenylistKey(k)] = struct{}{}
+	}
+	return out
+}()
+
+func normalizeDenylistKey(k string) string {
+	var b strings.Builder
+	b.Grow(len(k))
+	for _, r := range strings.ToLower(k) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func isDenylisted(k string) bool {
+	norm := normalizeDenylistKey(k)
+	if norm == "" {
+		return false
+	}
+	_, denied := normalizedDenylist[norm]
+	return denied
 }
 
 var secretValuePatterns = []*regexp.Regexp{
@@ -85,6 +133,12 @@ var secretValuePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bxox[bp]-[A-Za-z0-9-]{8,}`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b`),
 	regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]*:[^/\s@]+@`),
+	regexp.MustCompile(`(?i)x-access-token:[^\s@'"]+`),
+	regexp.MustCompile(`(?i)\boauth2:[^\s@'"]+`),
+	regexp.MustCompile(`(?i)\b(?:authorization|proxy-authorization|x-api-key|x-custodian-token)\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?i)\b(?:access_token|refresh_token|id_token|client_secret|oauth_token|pat)\s*=\s*[^\s&;]+`),
+	regexp.MustCompile(`\b(?i:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp(?:256|384|521)|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)\s+(?:AAAA[A-Za-z0-9+/=]{4,}|[A-Za-z0-9+/=]{20,})`),
+	regexp.MustCompile(`\b(?i:(?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp(?:256|384|521)|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)|rsa-sha2-(?:256|512))-cert-v01@openssh\.com)\s+(?:AAAA[A-Za-z0-9+/=]{4,}|[A-Za-z0-9+/=]{20,})`),
 }
 
 // SafeHandler wraps an slog.Handler and enforces an ID/digest-only allowlist plus secret/payload redaction.
@@ -131,10 +185,7 @@ func NewSafeHandler(inner slog.Handler, extraAllowlist []string) *SafeHandler {
 	}
 	for _, k := range extraAllowlist {
 		norm := normalizeKey(k)
-		if norm == "" {
-			continue
-		}
-		if _, denied := explicitDenylist[norm]; denied {
+		if norm == "" || isDenylisted(k) {
 			continue
 		}
 		allow[norm] = struct{}{}
@@ -226,20 +277,18 @@ func (h *SafeHandler) allActiveGroupsAllowed() bool {
 }
 
 func (h *SafeHandler) isGroupAllowed(name string) bool {
-	norm := normalizeKey(name)
-	if _, denied := explicitDenylist[norm]; denied {
+	if isDenylisted(name) {
 		return false
 	}
-	_, ok := h.groupAllow[norm]
+	_, ok := h.groupAllow[normalizeKey(name)]
 	return ok
 }
 
 func (h *SafeHandler) isKeyAllowed(key string) bool {
-	norm := normalizeKey(key)
-	if _, denied := explicitDenylist[norm]; denied {
+	if isDenylisted(key) {
 		return false
 	}
-	_, ok := h.allow[norm]
+	_, ok := h.allow[normalizeKey(key)]
 	return ok
 }
 

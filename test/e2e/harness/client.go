@@ -555,6 +555,144 @@ type AuditFilter struct {
 	Cursor       string
 }
 
+// --- Push Gateway & Control-Plane DTOs (strict JSON, omitempty, no explicit nulls) ---
+
+type PushFilter struct {
+	RepositoryID string
+	PrincipalID  string
+	Status       string
+	EgressMode   string
+	Limit        int
+	Cursor       string
+}
+
+type PushRefUpdateDTO struct {
+	RefName string `json:"ref_name"`
+	OldOID  string `json:"old_oid"`
+	NewOID  string `json:"new_oid"`
+}
+
+type PushSessionResp struct {
+	ID                    string             `json:"id"`
+	PushSessionID         string             `json:"push_session_id,omitempty"`
+	RepositoryID          string             `json:"repository_id,omitempty"`
+	PrincipalID           string             `json:"principal_id,omitempty"`
+	PrincipalSubject      string             `json:"principal_subject,omitempty"`
+	Destination           string             `json:"destination"`
+	DestinationRegistered bool               `json:"destination_registered"`
+	DestinationExternal   bool               `json:"destination_external"`
+	EgressMode            string             `json:"egress_mode"`
+	PassiveAuditDelivery  string             `json:"passive_audit_delivery,omitempty"`
+	Status                string             `json:"status"`
+	PolicyEffect          string             `json:"policy_effect,omitempty"`
+	PolicyDecisionID      string             `json:"policy_decision_id,omitempty"`
+	AssessmentID          string             `json:"assessment_id,omitempty"`
+	AssessmentStatus      string             `json:"assessment_status,omitempty"`
+	AssessmentDisposition string             `json:"assessment_disposition,omitempty"`
+	PushManifestDigest    string             `json:"push_manifest_digest,omitempty"`
+	BundleArtifactID      string             `json:"bundle_artifact_id,omitempty"`
+	HasLFS                bool               `json:"has_lfs"`
+	LFSObjectCount        int64              `json:"lfs_object_count,omitempty"`
+	LFSTotalBytes         int64              `json:"lfs_total_bytes,omitempty"`
+	CommitCount           int64              `json:"commit_count,omitempty"`
+	RefUpdates            []PushRefUpdateDTO `json:"ref_updates,omitempty"`
+	ApprovalReleaseID     string             `json:"approval_release_id,omitempty"`
+	UpstreamForwarded     bool               `json:"upstream_forwarded"`
+	CreatedAt             string             `json:"created_at,omitempty"`
+	UpdatedAt             string             `json:"updated_at,omitempty"`
+}
+
+type PushListResp struct {
+	Pushes     []PushSessionResp `json:"pushes"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+	HasMore    bool              `json:"has_more"`
+}
+
+type ApprovePushReq struct {
+	Decision           string `json:"decision"`
+	PushManifestDigest string `json:"push_manifest_digest"`
+	Destination        string `json:"destination,omitempty"`
+	TTLSeconds         int64  `json:"ttl_seconds,omitempty"`
+	ExpiresAt          string `json:"expires_at,omitempty"`
+	Comment            string `json:"comment,omitempty"`
+}
+
+type PushApprovalReleaseResp struct {
+	ID                 string `json:"id"`
+	PushSessionID      string `json:"push_session_id"`
+	PrincipalID        string `json:"principal_id,omitempty"`
+	Destination        string `json:"destination,omitempty"`
+	PushManifestDigest string `json:"push_manifest_digest"`
+	Decision           string `json:"decision"`
+	SingleUse          bool   `json:"single_use,omitempty"`
+	Consumed           bool   `json:"consumed,omitempty"`
+	ExpiresAt          string `json:"expires_at,omitempty"`
+	CreatedAt          string `json:"created_at,omitempty"`
+}
+
+type SetRepoEgressModeReq struct {
+	EgressMode           string `json:"egress_mode"`
+	PassiveAuditDelivery string `json:"passive_audit_delivery,omitempty"`
+}
+
+type RepoEgressModeResp struct {
+	RepositoryID         string `json:"repository_id"`
+	EgressMode           string `json:"egress_mode"`
+	PassiveAuditDelivery string `json:"passive_audit_delivery,omitempty"`
+	UpdatedAt            string `json:"updated_at,omitempty"`
+}
+
+type IPCorpusFilter struct {
+	Classification string
+	Limit          int
+	Cursor         string
+}
+
+type IPCorpusFileInput struct {
+	Path    string `json:"path"`
+	Content string `json:"content,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+}
+
+type CreateIPCorpusReq struct {
+	Name           string              `json:"name"`
+	Classification string              `json:"classification"`
+	Description    string              `json:"description,omitempty"`
+	SourcePath     string              `json:"source_path,omitempty"`
+	Files          []IPCorpusFileInput `json:"files,omitempty"`
+}
+
+type IPCorpusResp struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Classification   string `json:"classification"`
+	Description      string `json:"description,omitempty"`
+	Status           string `json:"status,omitempty"`
+	FingerprintCount int64  `json:"fingerprint_count"`
+	LastIndexedAt    string `json:"last_indexed_at,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
+}
+
+type IPCorporaListResp struct {
+	Corpora    []IPCorpusResp `json:"corpora"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+	HasMore    bool           `json:"has_more"`
+}
+
+type ReindexIPCorpusReq struct {
+	Force bool `json:"force,omitempty"`
+}
+
+type ReindexIPCorpusResp struct {
+	CorpusID            string `json:"corpus_id"`
+	OperationID         string `json:"operation_id,omitempty"`
+	Status              string `json:"status"`
+	FingerprintsIndexed int64  `json:"fingerprints_indexed"`
+	FilesProcessed      int64  `json:"files_processed,omitempty"`
+	CompletedAt         string `json:"completed_at,omitempty"`
+}
+
 func (c *APIClient) resolveURL(pathOrURL string, query map[string]string) (string, error) {
 	full := pathOrURL
 	if !strings.HasPrefix(pathOrURL, "http://") && !strings.HasPrefix(pathOrURL, "https://") {
@@ -587,6 +725,17 @@ func (c *APIClient) v1Path(suffix string) string {
 		suffix = "/" + suffix
 	}
 	return base + suffix
+}
+
+func (c *APIClient) pushPath(contractPath, defaultPath, id string) string {
+	p := strings.TrimSpace(contractPath)
+	if p == "" {
+		p = defaultPath
+	}
+	if id != "" {
+		p = strings.ReplaceAll(p, "{id}", url.PathEscape(id))
+	}
+	return c.v1Path(p)
 }
 
 // DoRaw sends a raw HTTP request with automatic auth/idempotency headers (unless overridden).
@@ -942,4 +1091,76 @@ func (c *APIClient) WaitForOperation(ctx context.Context, opID string, timeout t
 		}
 	}
 	return OperationResp{}, fmt.Errorf("operation %q did not reach terminal status within %s", opID, timeout)
+}
+
+// --- Push Gateway & Control-Plane API Methods ---
+
+func (c *APIClient) ListPushes(ctx context.Context, filter PushFilter, opts ...RequestOption) (PushListResp, *RawResponse, error) {
+	q := make(map[string]string)
+	if filter.RepositoryID != "" {
+		q["repository_id"] = filter.RepositoryID
+	}
+	if filter.PrincipalID != "" {
+		q["principal_id"] = filter.PrincipalID
+	}
+	if filter.Status != "" {
+		q["status"] = filter.Status
+	}
+	if filter.EgressMode != "" {
+		q["egress_mode"] = filter.EgressMode
+	}
+	if filter.Limit > 0 {
+		q["limit"] = fmt.Sprintf("%d", filter.Limit)
+	}
+	if filter.Cursor != "" {
+		q["cursor"] = filter.Cursor
+	}
+	if len(q) > 0 {
+		opts = append([]RequestOption{WithQuery(q)}, opts...)
+	}
+	path := c.pushPath(c.contracts.PushEndpoints.PushesPath, "/pushes", "")
+	return doJSON[PushListResp](ctx, c, http.MethodGet, path, nil, opts...)
+}
+
+func (c *APIClient) GetPush(ctx context.Context, pushID string, opts ...RequestOption) (PushSessionResp, *RawResponse, error) {
+	path := c.pushPath(c.contracts.PushEndpoints.PushByIDPath, "/pushes/{id}", pushID)
+	return doJSON[PushSessionResp](ctx, c, http.MethodGet, path, nil, opts...)
+}
+
+func (c *APIClient) ApprovePush(ctx context.Context, pushID string, req ApprovePushReq, opts ...RequestOption) (PushApprovalReleaseResp, *RawResponse, error) {
+	path := c.pushPath(c.contracts.PushEndpoints.PushApprovalsPath, "/pushes/{id}/approvals", pushID)
+	return doJSON[PushApprovalReleaseResp](ctx, c, http.MethodPost, path, req, opts...)
+}
+
+func (c *APIClient) SetRepoEgressMode(ctx context.Context, repoID string, req SetRepoEgressModeReq, opts ...RequestOption) (RepoEgressModeResp, *RawResponse, error) {
+	path := c.pushPath(c.contracts.PushEndpoints.RepoEgressModePath, "/repositories/{id}/egress-mode", repoID)
+	return doJSON[RepoEgressModeResp](ctx, c, http.MethodPut, path, req, opts...)
+}
+
+func (c *APIClient) ListIPCorpora(ctx context.Context, filter IPCorpusFilter, opts ...RequestOption) (IPCorporaListResp, *RawResponse, error) {
+	q := make(map[string]string)
+	if filter.Classification != "" {
+		q["classification"] = filter.Classification
+	}
+	if filter.Limit > 0 {
+		q["limit"] = fmt.Sprintf("%d", filter.Limit)
+	}
+	if filter.Cursor != "" {
+		q["cursor"] = filter.Cursor
+	}
+	if len(q) > 0 {
+		opts = append([]RequestOption{WithQuery(q)}, opts...)
+	}
+	path := c.pushPath(c.contracts.PushEndpoints.IPCorporaPath, "/ip-corpora", "")
+	return doJSON[IPCorporaListResp](ctx, c, http.MethodGet, path, nil, opts...)
+}
+
+func (c *APIClient) CreateIPCorpus(ctx context.Context, req CreateIPCorpusReq, opts ...RequestOption) (IPCorpusResp, *RawResponse, error) {
+	path := c.pushPath(c.contracts.PushEndpoints.IPCorporaPath, "/ip-corpora", "")
+	return doJSON[IPCorpusResp](ctx, c, http.MethodPost, path, req, opts...)
+}
+
+func (c *APIClient) ReindexIPCorpus(ctx context.Context, corpusID string, req ReindexIPCorpusReq, opts ...RequestOption) (ReindexIPCorpusResp, *RawResponse, error) {
+	path := c.pushPath(c.contracts.PushEndpoints.IPCorpusReindexPath, "/ip-corpora/{id}/reindex", corpusID)
+	return doJSON[ReindexIPCorpusResp](ctx, c, http.MethodPost, path, req, opts...)
 }

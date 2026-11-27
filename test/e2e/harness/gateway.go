@@ -165,6 +165,16 @@ func (g *MockGateway) SetMode(mode GatewayMode) {
 	g.defaultProg = GatewayProgram{Mode: mode, Confidence: 0.92}
 }
 
+func (g *MockGateway) SetModeWithAssessmentType(mode GatewayMode, assessmentType string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.defaultProg = GatewayProgram{
+		Mode:           mode,
+		AssessmentType: assessmentType,
+		Confidence:     0.92,
+	}
+}
+
 func (g *MockGateway) Enqueue(progs ...GatewayProgram) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

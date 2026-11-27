@@ -68,32 +68,47 @@ ORDER BY activated_at DESC, created_at DESC, id DESC;
 
 -- name: CreatePolicyDecision :one
 INSERT INTO policy_decisions (
-    id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+    id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11, $12, $13
 )
-RETURNING id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at;
+RETURNING id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at;
 
 -- name: GetPolicyDecisionByID :one
-SELECT id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 FROM policy_decisions
 WHERE id = $1;
 
 -- name: ListPolicyDecisionsByProposal :many
-SELECT id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 FROM policy_decisions
 WHERE proposal_id = $1
 ORDER BY created_at DESC, id DESC;
 
 -- name: GetLatestPolicyDecisionForProposal :one
-SELECT id, proposal_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
-    stage, input_digest, effect, reasons, obligations, created_at
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
 FROM policy_decisions
 WHERE proposal_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListPolicyDecisionsByPushSession :many
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
+FROM policy_decisions
+WHERE push_session_id = $1
+ORDER BY created_at DESC, id DESC;
+
+-- name: GetLatestPolicyDecisionForPushSession :one
+SELECT id, proposal_id, push_session_id, policy_bundle_id, org_bundle_id, repo_bundle_id,
+    stage, enforced, input_digest, effect, reasons, obligations, created_at
+FROM policy_decisions
+WHERE push_session_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT 1;

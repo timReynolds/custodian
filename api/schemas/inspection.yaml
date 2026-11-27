@@ -193,6 +193,7 @@ ModelAssessment:
         - COMPLETE
         - INDETERMINATE
         - FAILED
+        - NOT_REQUIRED
     risk:
       type: ["string", "null"]
       enum:
@@ -210,6 +211,7 @@ ModelAssessment:
         - ESCALATE
         - BLOCK
         - INDETERMINATE
+        - NOT_REQUIRED
         - null
     summary:
       type: ["string", "null"]

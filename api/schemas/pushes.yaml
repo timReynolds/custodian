@@ -1,0 +1,523 @@
+EgressMode:
+  type: string
+  enum:
+    - PASSIVE_AUDIT
+    - ENFORCE_BLOCK
+    - ENFORCE_PR
+
+PassiveAuditDelivery:
+  type: string
+  enum:
+    - ASYNC
+    - INLINE_WARN
+
+PushTransport:
+  type: string
+  enum:
+    - HTTPS
+    - SSH
+
+PushSessionStatus:
+  type: string
+  enum:
+    - RECEIVED
+    - UNPACKING
+    - QUARANTINED
+    - INSPECTING
+    - EVALUATING
+    - ALLOWED
+    - BLOCKED
+    - APPROVAL_REQUIRED
+    - FORWARDING
+    - COMPLETED
+    - OBSERVED_WOULD_BLOCK
+    - FAILED
+
+PushRefUpdate:
+  type: object
+  additionalProperties: false
+  required:
+    - ref_name
+    - old_oid
+    - new_oid
+  properties:
+    ref_name:
+      type: string
+      minLength: 1
+    old_oid:
+      type: string
+      pattern: "^[0-9a-f]{40,64}$"
+    new_oid:
+      type: string
+      pattern: "^[0-9a-f]{40,64}$"
+
+PushLFSObject:
+  type: object
+  additionalProperties: false
+  required:
+    - oid
+    - size
+  properties:
+    oid:
+      $ref: "./common.yaml#/SHA256Hex"
+    size:
+      type: integer
+      format: int64
+      minimum: 0
+
+PushScanRunSummary:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - push_session_id
+    - artifact_id
+    - scanner
+    - scanner_version
+    - status
+    - files_examined
+    - files_skipped
+    - complete
+    - started_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    push_session_id:
+      $ref: "./common.yaml#/UUIDv7"
+    artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    scanner:
+      type: string
+    scanner_version:
+      type: string
+    status:
+      type: string
+      enum:
+        - PENDING
+        - RUNNING
+        - COMPLETED
+        - FAILED
+        - TIMED_OUT
+        - INCOMPLETE
+    files_examined:
+      type: integer
+      minimum: 0
+    files_skipped:
+      type: integer
+      minimum: 0
+    complete:
+      type: boolean
+    started_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: ["string", "null"]
+      format: date-time
+
+PushModelAssessment:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - push_session_id
+    - artifact_id
+    - model_route
+    - model_version
+    - prompt_version
+    - assessment_type
+    - status
+    - input_digest
+    - output_digest
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    push_session_id:
+      $ref: "./common.yaml#/UUIDv7"
+    artifact_id:
+      $ref: "./common.yaml#/UUIDv7"
+    model_route:
+      type: string
+    model_version:
+      type: string
+    prompt_version:
+      type: string
+    assessment_type:
+      type: string
+    status:
+      type: string
+      enum:
+        - PENDING
+        - COMPLETE
+        - INDETERMINATE
+        - FAILED
+        - NOT_REQUIRED
+    risk:
+      type: ["string", "null"]
+      enum:
+        - CRITICAL
+        - HIGH
+        - MEDIUM
+        - LOW
+        - NONE
+        - null
+    disposition:
+      type: ["string", "null"]
+      enum:
+        - CLEAR
+        - REVIEW
+        - ESCALATE
+        - BLOCK
+        - INDETERMINATE
+        - NOT_REQUIRED
+        - null
+    summary:
+      type: ["string", "null"]
+    findings:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/ModelFinding"
+    limitations:
+      type: array
+      items:
+        type: string
+    input_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    output_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    created_at:
+      type: string
+      format: date-time
+
+PushPolicyDecision:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - push_session_id
+    - policy_bundle_id
+    - stage
+    - enforced
+    - input_digest
+    - effect
+    - reasons
+    - obligations
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    proposal_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    push_session_id:
+      $ref: "./common.yaml#/UUIDv7"
+    policy_bundle_id:
+      $ref: "./common.yaml#/UUIDv7"
+    stage:
+      type: string
+      enum:
+        - INGRESS
+        - EGRESS
+        - PUSH_EGRESS
+    enforced:
+      type: boolean
+    input_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    effect:
+      $ref: "./inspection.yaml#/PolicyEffect"
+    reasons:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/PolicyReason"
+    obligations:
+      type: array
+      items:
+        $ref: "./proposals.yaml#/Obligation"
+    created_at:
+      type: string
+      format: date-time
+
+PushApprovalReleaseResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - push_session_id
+    - principal_id
+    - approved_by
+    - destination
+    - push_manifest_digest
+    - decision
+    - single_use
+    - consumed
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    push_session_id:
+      $ref: "./common.yaml#/UUIDv7"
+    principal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    approved_by:
+      $ref: "./common.yaml#/UUIDv7"
+    consumed_by_push_session_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    policy_decision_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    destination:
+      type: string
+    push_manifest_digest:
+      $ref: "./common.yaml#/SHA256Hex"
+    decision:
+      type: string
+      enum:
+        - APPROVE
+        - REJECT
+    single_use:
+      type: boolean
+    consumed:
+      type: boolean
+    reason:
+      type: ["string", "null"]
+    comment:
+      type: ["string", "null"]
+    expires_at:
+      type: ["string", "null"]
+      format: date-time
+    consumed_at:
+      type: ["string", "null"]
+      format: date-time
+    revoked_at:
+      type: ["string", "null"]
+      format: date-time
+    created_at:
+      type: string
+      format: date-time
+
+PushSession:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - principal_id
+    - destination
+    - destination_registered
+    - destination_external
+    - egress_mode
+    - status
+    - has_lfs
+    - upstream_forwarded
+    - created_at
+  properties:
+    id:
+      $ref: "./common.yaml#/UUIDv7"
+    push_session_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    principal_id:
+      $ref: "./common.yaml#/UUIDv7"
+    principal_subject:
+      type: ["string", "null"]
+    repository_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    destination:
+      type: string
+    destination_host:
+      type: ["string", "null"]
+    destination_registered:
+      type: boolean
+    destination_external:
+      type: boolean
+    transport:
+      anyOf:
+        - $ref: "./pushes.yaml#/PushTransport"
+        - type: "null"
+    ref_updates:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushRefUpdate"
+    has_lfs:
+      type: boolean
+    lfs_objects:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushLFSObject"
+    lfs_object_count:
+      type: integer
+      format: int64
+      minimum: 0
+    lfs_total_bytes:
+      type: integer
+      format: int64
+      minimum: 0
+    commit_count:
+      type: integer
+      format: int64
+      minimum: 0
+    push_manifest_digest:
+      anyOf:
+        - $ref: "./common.yaml#/SHA256Hex"
+        - type: "null"
+    bundle_artifact_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    egress_mode:
+      $ref: "./pushes.yaml#/EgressMode"
+    passive_audit_delivery:
+      anyOf:
+        - $ref: "./pushes.yaml#/PassiveAuditDelivery"
+        - type: "null"
+    enforced:
+      type: boolean
+    status:
+      $ref: "./pushes.yaml#/PushSessionStatus"
+    verdict:
+      anyOf:
+        - $ref: "./inspection.yaml#/PolicyEffect"
+        - type: "null"
+    policy_effect:
+      anyOf:
+        - $ref: "./inspection.yaml#/PolicyEffect"
+        - type: "null"
+    latest_policy_decision_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    policy_decision_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    assessment_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    assessment_status:
+      type: ["string", "null"]
+      enum:
+        - PENDING
+        - COMPLETE
+        - INDETERMINATE
+        - FAILED
+        - NOT_REQUIRED
+        - null
+    assessment_disposition:
+      type: ["string", "null"]
+      enum:
+        - CLEAR
+        - REVIEW
+        - ESCALATE
+        - BLOCK
+        - INDETERMINATE
+        - NOT_REQUIRED
+        - null
+    approval_release_id:
+      anyOf:
+        - $ref: "./common.yaml#/UUIDv7"
+        - type: "null"
+    error_code:
+      type: ["string", "null"]
+    error_message:
+      type: ["string", "null"]
+    upstream_forwarded:
+      type: boolean
+    upstream_bytes_sent:
+      type: integer
+      format: int64
+      minimum: 0
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: ["string", "null"]
+      format: date-time
+    completed_at:
+      type: ["string", "null"]
+      format: date-time
+    scan_runs:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushScanRunSummary"
+    findings:
+      type: array
+      items:
+        $ref: "./inspection.yaml#/Finding"
+    assessments:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushModelAssessment"
+    policy_decisions:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushPolicyDecision"
+    approval_releases:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushApprovalReleaseResponse"
+
+PushListResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - pushes
+    - has_more
+  properties:
+    pushes:
+      type: array
+      items:
+        $ref: "./pushes.yaml#/PushSession"
+    next_cursor:
+      type: ["string", "null"]
+    has_more:
+      type: boolean
+
+ApprovePushRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - decision
+    - push_manifest_digest
+  properties:
+    decision:
+      type: string
+      enum:
+        - APPROVE
+        - REJECT
+    push_manifest_digest:
+      $ref: "./common.yaml#/SHA256Digest"
+    policy_evaluation_id:
+      $ref: "./common.yaml#/UUIDv7"
+    destination:
+      type: string
+      minLength: 1
+      maxLength: 512
+    ttl_seconds:
+      type: integer
+      format: int64
+      minimum: 1
+      maximum: 86400
+    expires_at:
+      type: string
+      format: date-time
+    comment:
+      type: string
+      maxLength: 4096
+    reason:
+      type: string
+      maxLength: 4096
